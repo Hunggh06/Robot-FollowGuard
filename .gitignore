@@ -35,3 +35,9 @@ src/test/mic_test/models/
 *.key
 *.secret
 *.p12
+
+# Local ESP32 network credentials. Copy the example and fill it locally.
+firmware/wifi_credentials.h
+
+# Raw calibration captures are reproducible and do not belong in the source release.
+src/robot_autonomous_yolo_slam_nav2/calibration/images/
