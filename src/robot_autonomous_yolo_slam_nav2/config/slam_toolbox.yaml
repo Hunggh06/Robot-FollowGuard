@@ -1,0 +1,39 @@
+# SLAM Toolbox online async cho LDS02RR (~6.5Hz, 360 diem) + odom ESP32.
+slam_toolbox:
+  ros__parameters:
+    use_sim_time: false
+    odom_topic: /odom
+    scan_topic: /scan
+    base_frame: base_footprint
+    odom_frame: odom
+    map_frame: map
+    scan_queue_size: 10
+    use_map_saver: true
+    # Map mới + đồ đạc di chuyển: publish map nhanh (2s thay vì default 5s)
+    # để xóa bóng ma sớm; buffer lớn cho lidar 360 tia thưa.
+    map_update_interval: 2.0
+    scan_buffer_size: 20
+    scan_buffer_maximum_scan_distance: 10.0
+
+    # Odom that tu encoder ESP32 qua motor_odom.py -> travel check chay
+    # binh thuong tro lai.
+    minimum_travel_distance: 0.02
+    minimum_travel_heading: 0.02
+    # Small indoor robot: bao giu chi tiet phong nho
+    resolution: 0.03
+    min_laser_range: 0.15
+    max_laser_range: 6.0      # khop range_max cua node telem
+    minimum_time_interval: 0.1
+    transform_timeout: 0.2
+    tf_buffer_duration: 30.0
+    stack_size_to_use: 40000000
+    enable_interactive_mode: false
+    position_covariance_scale: 1.0
+
+    do_loop_closing: true
+    loop_search_maximum_distance: 1.0
+    loop_match_minimum_chain_size: 10
+    loop_match_maximum_variance_coarse: 1.0
+    loop_match_minimum_response_fine: 0.65
+    loop_match_minimum_response_coarse: 0.4
+    max_nodes: 10000
