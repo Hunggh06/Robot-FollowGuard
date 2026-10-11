@@ -41,3 +41,14 @@ firmware/wifi_credentials.h
 
 # Raw calibration captures are reproducible and do not belong in the source release.
 src/robot_autonomous_yolo_slam_nav2/calibration/images/
+
+# Local archives and experiments excluded from the public project.
+kaia_leonardo_robot/
+src/test_slam_nav2/
+src/audio_common_msgs/
+src/gz_rosa_control/
+src/lidar_slam_project/
+src/my_bot_description/
+src/slam_teleop_map/
+src/test/
+src/mục tiêu dự án robot phone/
