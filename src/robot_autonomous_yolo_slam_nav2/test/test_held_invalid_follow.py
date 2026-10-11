@@ -77,9 +77,9 @@ def test_held_target_does_not_refresh_search_aim_or_drive(source, confirmed) -> 
         assert node._pending_goal is None
         assert not hasattr(node, "_spin_pub")
         if confirmed:
-            assert statuses[-1] == ("searching", "search_spinning")
+            assert statuses[-1] == ("searching", "search_driving")
         else:
-            assert statuses[-1] == ("searching", "search_spinning")
+            assert statuses[-1] == ("searching", "search_spinning_no_position")
     finally:
         node.destroy_node()
         rclpy.shutdown()
@@ -119,7 +119,7 @@ def test_stale_visual_contact_drives_nothing() -> None:
         assert node._active_goal is None
         assert node._pending_goal is None
         assert not hasattr(node, "_spin_pub")
-        assert statuses[-1] == ("searching", "search_spinning")
+        assert statuses[-1] == ("searching", "search_spinning_no_position")
     finally:
         node.destroy_node()
         rclpy.shutdown()
