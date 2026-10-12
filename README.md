@@ -264,9 +264,6 @@ Robot-FollowGuard/
   repository includes separately packaged `kaiaai_msgs` and `kaiaai_telemetry`
   components; their package metadata identifies their own licensing. FollowGuard
   does not claim to be the Kaia.ai platform.
-- **Presentation reference:** [quadrotor_mpc](https://github.com/whoisLePhuc/quadrotor_mpc)
-  informed documentation structure only; it contributed no flight-control code
-  or performance claims to this project.
 
 ## License
 
