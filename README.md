@@ -280,6 +280,6 @@ Robot-FollowGuard/
 
 ## License
 
-No repository-wide license is currently declared. Review each package's
-`package.xml` and upstream dependency license before redistributing code or
-hardware derivatives.
+This repository is licensed under the [MIT License](LICENSE). Review each
+package's `package.xml` and upstream dependency license before redistributing
+code or hardware derivatives.
