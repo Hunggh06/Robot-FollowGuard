@@ -23,7 +23,7 @@
 </p>
 
 <a href="assets/readme/screen-demo.mp4">
-  <img src="assets/readme/screen-demo-preview.gif" alt="Live system demonstration" width="480">
+  <img src="assets/readme/screen-demo-preview.gif" alt="Live system demonstration" width="96%">
 </a>
 
 </div>
