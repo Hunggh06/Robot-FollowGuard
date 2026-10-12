@@ -1,0 +1,63 @@
+image_width: 320
+image_height: 240
+camera_name: phone_camera_back
+camera_matrix:
+  rows: 3
+  cols: 3
+  data:
+  - 136.9219816928559
+  - 0.0
+  - 159.0215785354395
+  - 0.0
+  - 136.7827341662559
+  - 118.76897023219468
+  - 0.0
+  - 0.0
+  - 1.0
+distortion_model: plumb_bob
+distortion_coefficients:
+  rows: 1
+  cols: 5
+  data:
+  - -0.034481261207686166
+  - 0.033192470691778324
+  - -0.0008694714943462406
+  - -0.0011724728161400595
+  - -0.013549711538585694
+rectification_matrix:
+  rows: 3
+  cols: 3
+  data:
+  - 1.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+projection_matrix:
+  rows: 3
+  cols: 4
+  data:
+  - 136.9219816928559
+  - 0.0
+  - 159.0215785354395
+  - 0.0
+  - 0.0
+  - 136.7827341662559
+  - 118.76897023219468
+  - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+  - 0.0
+binning_x: 0
+binning_y: 0
+roi:
+  x_offset: 0
+  y_offset: 0
+  height: 0
+  width: 0
+  do_rectify: false

@@ -1,0 +1,135 @@
+phone_camera_info:
+  ros__parameters:
+    image_topic: /phone/camera/back/image
+    camera_info_topic: /phone/camera/back/camera_info
+    frame_id: phone_camera_back
+
+yolo_target_node:
+  ros__parameters:
+    image_topic: /phone/camera/back/image
+    camera_frame: phone_camera_back
+    model: /home/hungdo/ros2_ws/yolov8n.pt
+    imgsz: 416
+    conf: 0.5
+    device: cpu
+    tag_family: tag36h11
+    target_tag_id: 0
+    tag_roi_upscale: 4.0
+    lost_timeout_s: 2.0
+    ambiguity_iou: 0.3
+    lost_frames: 10
+    iou_match_thresh: 0.3
+    annotated_topic: /person_follow/annotated
+    observations_topic: ~/observations
+    target_topic: ~/target
+
+metric_target_node:
+  ros__parameters:
+    target_topic: /yolo_target_node/target
+    observations_topic: /yolo_target_node/observations
+    scan_topic: /scan
+    map_topic: /map
+    camera_info_topic: /phone/camera/back/camera_info
+    obstacles_topic: /person_follow/obstacles
+    metric_target_topic: /person_follow/target
+    base_frame: base_link
+    camera_frame: phone_camera_back
+    max_data_age_s: 1.0
+    max_sensor_skew_s: 0.8
+    max_scan_age_s: 1.5
+    max_scan_skew_s: 1.0
+    association_image_width: 0
+    association_image_height: 0
+    lidar_position_confidence: 0.95
+    hold_timeout_s: 5.0
+    hold_decay_per_s: 0.05
+    publish_period_s: 0.1
+
+nav2_person_follow:
+  ros__parameters:
+    target_topic: /person_follow/target
+    observations_topic: /yolo_target_node/observations
+    action_name: /navigate_to_pose
+    spin_action_name: /spin
+    base_frame: base_link
+    map_frame: map
+    robot_safety_clearance_m: 0.6
+    clearance_origin_offset_m: 0.2
+    follow_distance_m: 1.0
+    follow_resume_distance_m: 1.2
+    cancel_grace_cycles: 5
+    max_target_age_s: 1.0
+    corridor_half_width_m: 0.22
+    goal_update_distance_m: 0.1
+    goal_update_yaw_rad: 0.1
+    publish_period_s: 0.1
+    tf_timeout_s: 0.1
+    max_obstacle_points: 10000
+    cancel_timeout_s: 0.5
+    scan_topic: /scan
+    max_scan_age_s: 0.25
+    search_spin_default_rate_rad_s: 0.7
+    search_spin_min_rate_rad_s: 0.51
+    search_spin_max_rate_rad_s: 1.4
+    search_spin_deadband_rad: 0.1
+    search_max_spin_revolutions: 2.0
+    search_timeout_s: 0.0
+    search_drive_duration_s: 2.0
+    search_drive_speed_m_s: 0.15
+    search_inspection_per_person_s: 1.0
+    search_inspection_max_s: 5.0
+    search_inspection_max_obs_age_s: 0.5
+    guide_active_topic: /person_follow/guide_active
+    recovery_status_topic: /person_follow/recovery_status
+
+zone_guard:
+  ros__parameters:
+    target_topic: /person_follow/target
+    scan_topic: /scan
+    clicked_point_topic: /clicked_point
+    confirm_topic: /phone/speech_text
+    say_topic: /phone/speaker/say
+    guide_active_topic: /person_follow/guide_active
+    guide_status_topic: /person_follow/guide_status
+    zone_path_topic: /person_follow/red_zone
+    action_name: /navigate_to_pose
+    controller_node: /controller_server
+    base_frame: base_link
+    map_frame: map
+    zone_click_points: 4
+    zone_polygon_points: []
+    leaving_verify_s: 2.0
+    ask_delay_s: 5.0
+    repeat_s: 15.0
+    max_target_age_s: 1.0
+    max_scan_age_s: 0.25
+    confirm_keyword: "xác nhận"
+    confirm_ignore_after_say_s: 3.0
+    guide_return_x: 0.0
+    guide_return_y: 0.0
+    guide_return_yaw: 0.0
+    guide_return_override: false
+    guide_max_vel_x: 0.25
+    search_spin_default_rate_rad_s: 0.7
+    search_spin_min_rate_rad_s: 0.51
+    search_spin_max_rate_rad_s: 1.4
+    search_spin_deadband_rad: 0.1
+    search_max_spin_revolutions: 2.0
+    publish_period_s: 0.1
+    tf_timeout_s: 0.1
+
+safety_gate:
+  ros__parameters:
+    allow_reverse: true
+    input_topic: /cmd_vel
+    output_topic: /cmd_vel_safe
+    scan_topic: /scan
+    base_frame: base_footprint
+    robot_safety_clearance_m: 0.6
+    clearance_origin_offset_m: 0.2
+    slow_delta_m: 0.3
+    corridor_half_width_m: 0.22
+    max_scan_age_s: 0.25
+    command_timeout_s: 0.25
+    tf_timeout_s: 0.1
+    slow_scale: 0.5
