@@ -242,6 +242,28 @@ def estimate_person_speed(
     return math.hypot(x1 - x0, y1 - y0) / dt_s
 
 
+def inspection_pause_duration_s(
+    person_count: int,
+    per_person_s: float,
+    max_s: float,
+) -> float:
+    """Hold time letting ROI-only tag confirmation run before resuming spin.
+
+    Two seconds per visible person, capped at max_s (10 s default). Zero or
+    negative counts, rates, and caps all mean no pause.
+    """
+    if person_count <= 0:
+        return 0.0
+    if (
+        not math.isfinite(per_person_s)
+        or not math.isfinite(max_s)
+        or per_person_s <= 0.0
+        or max_s <= 0.0
+    ):
+        return 0.0
+    return min(max_s, float(person_count) * per_person_s)
+
+
 def search_spin_command(
     bearing_rad: float | None,
     speed_m_s: float | None,

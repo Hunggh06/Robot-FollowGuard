@@ -23,7 +23,7 @@ from sensor_msgs.msg import LaserScan, PointCloud2
 from std_msgs.msg import Bool, String
 from tf2_ros import Buffer, TransformListener
 
-from robot_autonomous_yolo_slam_nav2.msg import PersonTarget
+from robot_autonomous_yolo_slam_nav2.msg import PersonObservation, PersonTarget
 
 from .follow_goal_helpers import (
     CancelGrace,
@@ -33,6 +33,7 @@ from .follow_goal_helpers import (
     decide_follow_goal,
     estimate_person_speed,
     grace_advance,
+    inspection_pause_duration_s,
     search_spin_command,
     update_close_latch,
 )
@@ -87,6 +88,10 @@ class Nav2PersonFollowRuntime(Nav2PersonFollowActions, Nav2PersonFollowSpinActio
         self._pending_spin_yaw = 0.0
         self._guide_active = False
         self._guide_yielded = False
+        self._person_obs: dict[int, int] = {}
+        self._inspection_until_ns = 0
+        self._inspection_ids: set[int] = set()
+        self._inspection_done_ids: set[int] = set()
         self._status_pub = self.create_publisher(
             String,
             str(self.get_parameter("recovery_status_topic").value),
@@ -100,6 +105,12 @@ class Nav2PersonFollowRuntime(Nav2PersonFollowActions, Nav2PersonFollowSpinActio
             PersonTarget,
             str(self.get_parameter("target_topic").value),
             self._target_callback,
+            5,
+        )
+        self.create_subscription(
+            PersonObservation,
+            str(self.get_parameter("observations_topic").value),
+            self._person_observations_callback,
             5,
         )
         self.create_subscription(
@@ -125,6 +136,7 @@ class Nav2PersonFollowRuntime(Nav2PersonFollowActions, Nav2PersonFollowSpinActio
 
     def _declare_parameters(self) -> None:
         self.declare_parameter("target_topic", "/person_follow/target")
+        self.declare_parameter("observations_topic", "/yolo_target_node/observations")
         self.declare_parameter("obstacles_topic", "/person_follow/obstacles")
         self.declare_parameter("action_name", "/navigate_to_pose")
         self.declare_parameter("spin_action_name", "/spin")
@@ -153,6 +165,9 @@ class Nav2PersonFollowRuntime(Nav2PersonFollowActions, Nav2PersonFollowSpinActio
         self.declare_parameter("search_timeout_s", 0.0)
         self.declare_parameter("search_drive_duration_s", 2.0)
         self.declare_parameter("search_drive_speed_m_s", 0.15)
+        self.declare_parameter("search_inspection_per_person_s", 2.0)
+        self.declare_parameter("search_inspection_max_s", 10.0)
+        self.declare_parameter("search_inspection_max_obs_age_s", 0.5)
         self.declare_parameter("guide_active_topic", "/person_follow/guide_active")
         self.declare_parameter("recovery_status_topic", "/person_follow/recovery_status")
 
@@ -161,6 +176,32 @@ class Nav2PersonFollowRuntime(Nav2PersonFollowActions, Nav2PersonFollowSpinActio
 
     def _target_callback(self, message: PersonTarget) -> None:
         self._target = message
+
+    def _person_observations_callback(self, message: PersonObservation) -> None:
+        """Track fresh per-person presence for the search inspection pause.
+
+        Track id 0 is the YOLO empty message (no person); only real track
+        ids count as presence. Stamps key freshness, never motion.
+        """
+        track_id = int(message.track_id)
+        if track_id == 0:
+            return
+        self._person_obs[track_id] = (
+            int(message.header.stamp.sec) * 1_000_000_000
+            + int(message.header.stamp.nanosec)
+        )
+
+    def _fresh_track_ids(self, now_ns: int) -> set[int]:
+        max_age_s = self._float_parameter("search_inspection_max_obs_age_s")
+        fresh: set[int] = set()
+        for track_id, stamp_ns in self._person_obs.items():
+            age_s = (now_ns - stamp_ns) / 1_000_000_000.0
+            if 0.0 <= age_s <= max_age_s:
+                fresh.add(track_id)
+        return fresh
+
+    def _fresh_person_count(self, now_ns: int) -> int:
+        return len(self._fresh_track_ids(now_ns))
 
     def _obstacles_callback(self, message: PointCloud2) -> None:
         self._obstacles = message
@@ -232,6 +273,9 @@ class Nav2PersonFollowRuntime(Nav2PersonFollowActions, Nav2PersonFollowSpinActio
             self._spin_accum_rad = 0.0
             self._last_spin_ns = 0
             self._spin_capped = False
+            self._inspection_until_ns = 0
+            self._inspection_ids = set()
+            self._inspection_done_ids = set()
             self._cancel_spin()
         follow_config = self._follow_config()
         fresh_range: float | None = None
@@ -267,6 +311,54 @@ class Nav2PersonFollowRuntime(Nav2PersonFollowActions, Nav2PersonFollowSpinActio
         self._apply_decision(decision, target.header.stamp)
         self._publish_status("following", "following_confirmed_target")
 
+    def _inspect_people(self, now_ns: int) -> bool:
+        """Hold the spin while fresh people may still confirm the tag.
+
+        Anchors one bounded window per fresh track set (never extended),
+        cancels only the in-flight Nav2 spin, and sends nothing while the
+        window holds. Stale or zero people ends the pause and resumes the
+        spin; a tag lock exits through the following path instead. Each
+        completed track id is remembered so the same track never retriggers,
+        while a new fresh track id may anchor its own bounded window.
+        """
+        fresh_ids = self._fresh_track_ids(now_ns)
+        if self._inspection_until_ns > now_ns:
+            if fresh_ids:
+                self._inspection_ids |= fresh_ids
+                self._cancel_spin()
+                self._last_spin_ns = now_ns
+                self._publish_status("searching", "search_inspecting")
+                return True
+            # Stale or zero people inside the window: end the pause, remember
+            # the inspected tracks, and resume the spin.
+            self._inspection_done_ids |= self._inspection_ids
+            self._inspection_ids = set()
+            self._inspection_until_ns = 0
+            return False
+        if self._inspection_until_ns != 0:
+            # Anchored window expired: remember the inspected tracks, then
+            # fall through so only a new fresh track id may anchor again.
+            self._inspection_done_ids |= self._inspection_ids
+            self._inspection_ids = set()
+            self._inspection_until_ns = 0
+        novel_ids = fresh_ids - self._inspection_done_ids
+        if not novel_ids:
+            return False
+        window_s = inspection_pause_duration_s(
+            len(novel_ids),
+            self._float_parameter("search_inspection_per_person_s"),
+            self._float_parameter("search_inspection_max_s"),
+        )
+        if window_s <= 0.0:
+            self._inspection_done_ids |= novel_ids
+            return False
+        self._inspection_ids = set(novel_ids)
+        self._inspection_until_ns = now_ns + int(window_s * 1_000_000_000)
+        self._cancel_spin()
+        self._last_spin_ns = now_ns
+        self._publish_status("searching", "search_inspecting")
+        return True
+
     def _spin_search(self, now_ns: int, scan_fresh: bool, allow_drive: bool = True) -> None:
         """Ride the live Nav2 goal; search with bounded Nav2 /spin when free.
 
@@ -285,9 +377,14 @@ class Nav2PersonFollowRuntime(Nav2PersonFollowActions, Nav2PersonFollowSpinActio
             self._spin_accum_rad = 0.0
             self._last_spin_ns = now_ns
             self._spin_capped = False
+            self._inspection_until_ns = 0
+            self._inspection_ids = set()
+            self._inspection_done_ids = set()
         if self._active_goal is not None or self._pending_goal is not None:
             self._last_spin_ns = now_ns
             self._publish_status("searching", "search_riding_nav2_goal")
+            return
+        if self._inspect_people(now_ns):
             return
         if self._pending_spin is not None or self._active_spin is not None:
             self._last_spin_ns = now_ns

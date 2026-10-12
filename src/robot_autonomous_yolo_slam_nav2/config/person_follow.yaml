@@ -67,6 +67,7 @@ nav2_person_follow:
   ros__parameters:
     target_topic: /person_follow/target
     obstacles_topic: /person_follow/obstacles
+    observations_topic: /yolo_target_node/observations
     action_name: /navigate_to_pose
     spin_action_name: /spin
     base_frame: base_link
@@ -94,6 +95,9 @@ nav2_person_follow:
     search_timeout_s: 0.0
     search_drive_duration_s: 2.0
     search_drive_speed_m_s: 0.15
+    search_inspection_per_person_s: 2.0
+    search_inspection_max_s: 10.0
+    search_inspection_max_obs_age_s: 0.5
     guide_active_topic: /person_follow/guide_active
     recovery_status_topic: /person_follow/recovery_status
 
