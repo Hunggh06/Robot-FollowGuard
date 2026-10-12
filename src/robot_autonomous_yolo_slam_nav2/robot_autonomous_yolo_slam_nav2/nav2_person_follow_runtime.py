@@ -90,7 +90,8 @@ class Nav2PersonFollowRuntime(Nav2PersonFollowActions, Nav2PersonFollowSpinActio
         self._guide_yielded = False
         self._person_obs: dict[int, int] = {}
         self._inspection_until_ns = 0
-        self._inspection_done = False
+        self._inspection_ids: set[int] = set()
+        self._inspection_done_ids: set[int] = set()
         self._status_pub = self.create_publisher(
             String,
             str(self.get_parameter("recovery_status_topic").value),
@@ -164,8 +165,8 @@ class Nav2PersonFollowRuntime(Nav2PersonFollowActions, Nav2PersonFollowSpinActio
         self.declare_parameter("search_timeout_s", 0.0)
         self.declare_parameter("search_drive_duration_s", 2.0)
         self.declare_parameter("search_drive_speed_m_s", 0.15)
-        self.declare_parameter("search_inspection_per_person_s", 1.0)
-        self.declare_parameter("search_inspection_max_s", 5.0)
+        self.declare_parameter("search_inspection_per_person_s", 2.0)
+        self.declare_parameter("search_inspection_max_s", 10.0)
         self.declare_parameter("search_inspection_max_obs_age_s", 0.5)
         self.declare_parameter("guide_active_topic", "/person_follow/guide_active")
         self.declare_parameter("recovery_status_topic", "/person_follow/recovery_status")
@@ -190,14 +191,14 @@ class Nav2PersonFollowRuntime(Nav2PersonFollowActions, Nav2PersonFollowSpinActio
             + int(message.header.stamp.nanosec)
         )
 
-    def _fresh_person_count(self, now_ns: int) -> int:
+    def _fresh_track_ids(self, now_ns: int) -> set[int]:
         max_age_s = self._float_parameter("search_inspection_max_obs_age_s")
-        count = 0
-        for stamp_ns in self._person_obs.values():
+        fresh: set[int] = set()
+        for track_id, stamp_ns in self._person_obs.items():
             age_s = (now_ns - stamp_ns) / 1_000_000_000.0
             if 0.0 <= age_s <= max_age_s:
-                count += 1
-        return count
+                fresh.add(track_id)
+        return fresh
 
     def _obstacles_callback(self, message: PointCloud2) -> None:
         self._obstacles = message
@@ -270,7 +271,8 @@ class Nav2PersonFollowRuntime(Nav2PersonFollowActions, Nav2PersonFollowSpinActio
             self._last_spin_ns = 0
             self._spin_capped = False
             self._inspection_until_ns = 0
-            self._inspection_done = False
+            self._inspection_ids = set()
+            self._inspection_done_ids = set()
             self._cancel_spin()
         follow_config = self._follow_config()
         fresh_range: float | None = None
@@ -309,39 +311,42 @@ class Nav2PersonFollowRuntime(Nav2PersonFollowActions, Nav2PersonFollowSpinActio
     def _inspect_people(self, now_ns: int) -> bool:
         """Hold the spin while fresh people may still confirm the tag.
 
-        Anchors one bounded window per search episode (never extended),
+        Anchors one bounded window per fresh track set (never extended),
         cancels only the in-flight Nav2 spin, and sends nothing while the
         window holds. Stale or zero people ends the pause and resumes the
-        spin; a tag lock exits through the following path instead.
+        spin; a tag lock exits through the following path instead. Each
+        completed track id is remembered so the same track never retriggers,
+        while a new fresh track id may anchor its own bounded window.
         """
-        person_count = self._fresh_person_count(now_ns)
+        fresh_ids = self._fresh_track_ids(now_ns)
         if self._inspection_until_ns > now_ns:
-            if person_count > 0:
+            if fresh_ids:
+                self._inspection_ids |= fresh_ids
                 self._cancel_spin()
                 self._last_spin_ns = now_ns
                 self._publish_status("searching", "search_inspecting")
                 return True
-            # Stale or zero people inside the window: end the single pause
-            # and resume the spin with no second window this episode.
+            self._inspection_done_ids |= self._inspection_ids
+            self._inspection_ids = set()
             self._inspection_until_ns = 0
-            self._inspection_done = True
             return False
         if self._inspection_until_ns != 0:
-            # Anchored window expired: one pause per search episode, never
-            # extended, even while people stay visible.
+            self._inspection_done_ids |= self._inspection_ids
+            self._inspection_ids = set()
             self._inspection_until_ns = 0
-            self._inspection_done = True
             return False
-        if self._inspection_done or person_count <= 0:
+        novel_ids = fresh_ids - self._inspection_done_ids
+        if not novel_ids:
             return False
         window_s = inspection_pause_duration_s(
-            person_count,
+            len(novel_ids),
             self._float_parameter("search_inspection_per_person_s"),
             self._float_parameter("search_inspection_max_s"),
         )
         if window_s <= 0.0:
-            self._inspection_done = True
+            self._inspection_done_ids |= novel_ids
             return False
+        self._inspection_ids = set(novel_ids)
         self._inspection_until_ns = now_ns + int(window_s * 1_000_000_000)
         self._cancel_spin()
         self._last_spin_ns = now_ns
@@ -367,7 +372,8 @@ class Nav2PersonFollowRuntime(Nav2PersonFollowActions, Nav2PersonFollowSpinActio
             self._last_spin_ns = now_ns
             self._spin_capped = False
             self._inspection_until_ns = 0
-            self._inspection_done = False
+            self._inspection_ids = set()
+            self._inspection_done_ids = set()
         if self._active_goal is not None or self._pending_goal is not None:
             self._last_spin_ns = now_ns
             self._publish_status("searching", "search_riding_nav2_goal")

@@ -249,7 +249,7 @@ def inspection_pause_duration_s(
 ) -> float:
     """Hold time letting ROI-only tag confirmation run before resuming spin.
 
-    One second per visible person, capped at max_s (5 s default). Zero or
+    Two seconds per visible person, capped at max_s (10 s default). Zero or
     negative counts, rates, and caps all mean no pause.
     """
     if person_count <= 0:

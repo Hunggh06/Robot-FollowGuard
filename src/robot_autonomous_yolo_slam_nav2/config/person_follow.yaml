@@ -76,8 +76,8 @@ nav2_person_follow:
     search_timeout_s: 0.0
     search_drive_duration_s: 2.0
     search_drive_speed_m_s: 0.15
-    search_inspection_per_person_s: 1.0
-    search_inspection_max_s: 5.0
+    search_inspection_per_person_s: 2.0
+    search_inspection_max_s: 10.0
     search_inspection_max_obs_age_s: 0.5
     guide_active_topic: /person_follow/guide_active
     recovery_status_topic: /person_follow/recovery_status
