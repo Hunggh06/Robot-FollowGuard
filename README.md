@@ -215,6 +215,20 @@ replace it with your local absolute path before launching.
 6. Place `tag36h11` ID `0` on the intended person. For camera-only inspection,
    use `use_slam:=false` and view `/person_follow/annotated` in `rqt_image_view`.
 
+### Draw a Safe Zone in RViz
+
+1. In RViz, set the fixed frame to `map`, then select **Publish Point** and
+   verify that its topic is `/clicked_point`.
+2. Click the four corners of the safe zone in order around its boundary, either
+   clockwise or counter-clockwise. Do not cross the polygon edges.
+3. The fourth point arms the zone automatically. The guard publishes the zone
+   outline on `/person_follow/red_zone` and then monitors the confirmed target.
+4. To replace an armed zone, call the reset service and draw four new corners:
+
+   ```bash
+   ros2 service call /zone_guard/reset_zone std_srvs/srv/Trigger "{}"
+   ```
+
 ## Experiments & Validation
 
 > [!IMPORTANT]
