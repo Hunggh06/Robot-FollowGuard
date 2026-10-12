@@ -17,15 +17,14 @@
 [![Nav2](https://img.shields.io/badge/navigation-Nav2-2B6CB0)](https://navigation.ros.org/)
 [![ESP32](https://img.shields.io/badge/embedded-ESP32-00979D?logo=espressif)](https://www.espressif.com/)
 
-<div style="border: 1px dashed #8b949e; border-radius: 8px; padding: 2rem; max-width: 800px; margin: 1rem auto;">
-<strong>[Robot Hardware Photo — Coming Soon]</strong><br>
-<sub>Reserved for <code>assets/readme/robot-photo.jpg</code>.</sub>
-</div>
+<p>
+  <img src="assets/readme/robot-photo-1.jpg" alt="Robot FollowGuard" width="48%">
+  <img src="assets/readme/robot-photo-2.jpg" alt="Robot FollowGuard hardware" width="48%">
+</p>
 
-<div style="border: 1px dashed #8b949e; border-radius: 8px; padding: 2rem; max-width: 800px; margin: 1rem auto;">
-<strong>[Live System Demonstration — Coming Soon]</strong><br>
-<sub>Reserved for <code>assets/readme/screen-demo.mp4</code>.</sub>
-</div>
+<p>
+  <a href="assets/readme/screen-demo.mp4"><strong>Watch the live system demonstration</strong></a>
+</p>
 
 </div>
 
@@ -239,7 +238,7 @@ replace it with your local absolute path before launching.
 
 ```text
 Robot-FollowGuard/
-├── assets/readme/                 # Placeholder guidance; no demo media committed
+├── assets/readme/                 # README photos and live demonstration video
 ├── docs/                          # Architecture, hardware, algorithms, validation, troubleshooting
 ├── src/
 │   ├── kaiaai_msgs/               # Custom telemetry interfaces
