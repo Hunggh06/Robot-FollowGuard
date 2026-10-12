@@ -22,9 +22,7 @@
   <img src="assets/readme/robot-photo-2.jpg" alt="Robot FollowGuard hardware" width="48%">
 </p>
 
-<p>
-  <a href="assets/readme/screen-demo.mp4"><strong>Watch the live system demonstration</strong></a>
-</p>
+<video src="assets/readme/screen-demo.mp4" controls width="480"></video>
 
 </div>
 
