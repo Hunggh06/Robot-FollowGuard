@@ -1,0 +1,57 @@
+# ============================================================
+# SLAM TOOLBOX — chinh cho LDS02RR
+# ============================================================
+# Sua tren mapper_params_online_async.yaml cua slam_toolbox.
+#
+# Ly do sua:
+#   LDS02RR chi co ~25% tia co phan xa (do chinh no danh dau invalid 81%).
+#   Khi so do goc lap, nhiieu cell rong -> khoang cach giua cac diem do
+#   lon. scan_matcher kho nhung diem do thi kho map rat cham, hoac khong
+#   kho duoc. Nen:
+#     - giu do phan giai cao (0,05 m) de map minh
+#     - ha minimum_travel_distance/heading xuong, de moi lan scan deu
+#       duoc dung chu khong phai doi robot di xa moi ghi them
+#     - scans_per_index tang nhẹ, cham do thoi gian
+#   minimum_travel_distance 0,5 -> 0,15
+#   minimum_travel_heading 0,5 -> 0,15
+#
+# Neu ban chay khi robot DI CHUYEN BANG ODOM THAT (khong phai odom
+# identity), bo het khoang cach toi thieu xuong 0,05 — con lai thi map
+# cham khong noi.
+# ============================================================
+
+slam_toolbox:
+  ros__parameters:
+
+    # ---- frame ----
+    odom_frame: odom
+    map_frame: map
+    base_frame: base_footprint
+    scan_topic: /scan
+
+    mode: mapping
+    use_sim_time: false
+
+    resolution: 0.05
+
+    # ---- nguong chuyen dong ----
+    # Giam de scan hap vao du duoc chu khong can robot di xa
+    minimum_travel_distance: 0.15
+    minimum_travel_heading: 0.15
+    throttle_scans: 1
+
+    # TEN: min/max_laser_range — KHONG phai distance_laser/angle_laser
+    min_laser_range: 0.15
+    max_laser_range: 6.0
+
+    # ---- bao loi (LDS02RR nhieu) ----
+    use_scan_barycenter: true
+    scan_queue_size: 1
+    scans_per_subset: 15
+
+    # ---- loop closure ----
+    loop_close_frequency: 10
+    transform_publish_period: 0.02
+    tf_buffer_length: 0.1
+
+    enable_interactive_mode: true
