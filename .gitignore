@@ -1,0 +1,51 @@
+# ROS 2 generated workspaces (never commit build output)
+build/
+install/
+log/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ML model weights and datasets (fetch locally, never commit)
+*.pt
+*.pth
+*.onnx
+*.bin
+*.bag
+*.db
+
+# Maps are recorded per room; do not commit local maps
+maps/
+*.pgm
+
+# Raw calibration captures are reproducible; keep only the solved YAML
+src/robot_autonomous_yolo_slam_nav2/calibration/images/
+
+# Local secrets and credentials
+.env
+.env.*
+*.pem
+*.key
+*.secret
+*.p12
+
+# Editors and OS artifacts
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+
+# Logs and diagnostics
+*.log
+slam_diag_*/
+frames_*.gv
+frames_*.pdf
