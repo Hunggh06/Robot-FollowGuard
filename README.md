@@ -167,7 +167,7 @@ state transitions and the [hardware guide](docs/hardware.md) for interfaces.
 | Android phone | Supplies `/phone/camera/back/image`; may bridge configured speech topics. |
 | ESP32 | Runs `firmware_esp32/robot.ino`: micro-ROS, LDS02RR telemetry, motor PID, encoders. |
 | Xiaomi LDS02RR | UART LiDAR source decoded into `/scan` by `kaiaai_telemetry`. |
-| Motors and encoders | Receive RPM commands and produce firmware state feedback. |
+| Motors and encoders | JGA25-370 geared DC motors, rated at 240 RPM; receive RPM commands and produce firmware state feedback. |
 | AprilTag marker | `tag36h11`, ID `0`; required for initial target confirmation. |
 
 ## Software Stack
