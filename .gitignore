@@ -2,7 +2,11 @@
 **/build/
 **/install/
 **/log/
+build/
+install/
+log/
 .venv/
+venv/
 .codegraph
 .codegraph/
 .omo/
@@ -10,10 +14,16 @@
 # Python and editor caches
 __pycache__/
 *.py[cod]
+*.egg-info/
+.eggs/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
 .vscode/
+.idea/
+*.swp
+*~
+.DS_Store
 
 # Runtime logs and generated diagnostics
 *.log
@@ -21,12 +31,19 @@ slam_diag_*/
 frames_*.gv
 frames_*.pdf
 
-# Large model and dataset artifacts
+# Large model and dataset artifacts (fetch locally, never commit)
 *.pt
+*.pth
 *.onnx
+*.bin
 *.bag
 *.db
 src/test/mic_test/models/
+
+# Maps are recorded per room; do not commit new local maps.
+# (maps/*.pgm + *.yaml already tracked stay tracked.)
+maps/
+*.pgm
 
 # Local secrets and credentials
 .env
@@ -39,7 +56,7 @@ src/test/mic_test/models/
 # Local ESP32 network credentials. Copy the example and fill it locally.
 firmware/wifi_credentials.h
 
-# Raw calibration captures are reproducible and do not belong in the source release.
+# Raw calibration captures are reproducible; keep only the solved YAML.
 src/robot_autonomous_yolo_slam_nav2/calibration/images/
 
 # Local archives and experiments excluded from the public project.
