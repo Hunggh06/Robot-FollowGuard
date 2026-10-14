@@ -1,8 +1,9 @@
 # ROS 2 Person-Following Robot
 
 This workspace holds a selectively published ROS 2 robot project. A mobile
-base with 2D LiDAR follows one person, identified by YOLO detection plus an
-AprilTag check, using SLAM Toolbox for mapping and Nav2 for motion.
+base with 2D LiDAR follows one person, identified by YOLO detection plus a
+selectable identity check (default red-above-blue leg bands, AprilTag
+rollback), using SLAM Toolbox for mapping and Nav2 for motion.
 
 It runs on ROS 2 Humble. The stack was cleaned for public sharing, so only
 the packages needed to build and run the follower remain here.
@@ -35,16 +36,10 @@ stays out of version control.
 ## Requirements
 
 You need a working ROS 2 Humble install with colcon, plus SLAM Toolbox and
-the Nav2 bringup packages. AprilTag message packages must be present too,
-since the follower consumes `apriltag_msgs/msg/AprilTagDetectionArray`.
+the Nav2 bringup packages.
 
 Python nodes use the workspace virtualenv that contains Ultralytics for YOLO
-inference. Confirm the message dependency first:
-
-```bash
-ros2 pkg prefix apriltag_ros
-ros2 interface show apriltag_msgs/msg/AprilTagDetectionArray
-```
+inference.
 
 ## Build
 
@@ -103,6 +98,18 @@ scan (0.25 s) before any forward motion.
 When the confirmed target is lost, the follower rides the live Nav2 goal
 first, then searches in place through the Nav2 `/spin` action, capped at
 two full revolutions. A confirmed sighting returns to following at once.
+
+Identity selection lives in `yolo_target_node.identity_mode` (default
+`color_bands`: three consecutive red-above-blue lower-leg frames lock the
+target; tune `band_*` HSV/geometry in
+`src/robot_autonomous_yolo_slam_nav2/config/person_follow.yaml` for the room
+lighting). The AprilTag path stays fully wired for rollback with no behavior
+change:
+
+```bash
+ros2 launch robot_autonomous_yolo_slam_nav2 person_follow.launch.py \
+  use_slam:=true identity_mode:=apriltag
+```
 
 For full detail on topics, position sources (`lidar`, `held_invalid`,
 `none`), target policy, recovery search, and the zone guard, read the

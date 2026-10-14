@@ -30,6 +30,90 @@ class TwistCommand:
 
 
 @dataclass(frozen=True, slots=True)
+class ScanDebounceConfig:
+    """Hysteresis band + dwell for scan freshness (fail-closed).
+
+    Stale triggers immediately when age exceeds max_age_s. Recovery needs
+    recover_count consecutive samples at or below recover_age_s, so a single
+    fresh blip during jitter cannot reopen forward motion. Stale output must
+    always gate to exact zero forward velocity, never a reduced velocity.
+    """
+
+    max_age_s: float = 0.25
+    recover_age_s: float = 0.20
+    recover_count: int = 3
+
+    def normalized(self) -> ScanDebounceConfig:
+        """Return a fail-closed sanitization of these parameters.
+
+        Non-finite or negative ages collapse to zero so nothing reads as
+        fresh; recover age clamps down to max age so the hysteresis band can
+        never widen acceptance; recover count clamps up to at least one.
+        """
+        max_age = self.max_age_s
+        if not math.isfinite(max_age) or max_age < 0.0:
+            max_age = 0.0
+        recover_age = self.recover_age_s
+        if not math.isfinite(recover_age) or recover_age < 0.0:
+            recover_age = 0.0
+        if recover_age > max_age:
+            recover_age = max_age
+        try:
+            recover_count = int(self.recover_count)
+        except (TypeError, ValueError, OverflowError):
+            recover_count = 1
+        if recover_count < 1:
+            recover_count = 1
+        return ScanDebounceConfig(max_age, recover_age, recover_count)
+
+
+@dataclass(frozen=True, slots=True)
+class ScanDebounceState:
+    """Latched stale flag plus consecutive distinct-fresh-sample count."""
+
+    stale_latched: bool = False
+    fresh_consec: int = 0
+    last_stamp_ns: int = 0
+
+
+def debounce_scan_stale(
+    state: ScanDebounceState,
+    age_s: float | None,
+    config: ScanDebounceConfig,
+    stamp_ns: int | None = None,
+) -> tuple[ScanDebounceState, bool]:
+    """Debounce scan freshness without ever allowing forward motion on stale.
+
+    Recovery counts strictly increasing scan stamps: repeated evaluations of
+    the same sample, or a delayed out-of-order sample older than the newest
+    counted one, hold the counter instead of advancing it, so
+    ``recover_count`` always means that many fresh scans in order, never
+    that many callback ticks. ``stamp_ns=None`` keeps the legacy per-call
+    counting for callers without stamp knowledge.
+    """
+    config = config.normalized()
+    stamp = stamp_ns if stamp_ns is not None and stamp_ns > 0 else state.last_stamp_ns
+    if age_s is None or not math.isfinite(age_s) or age_s < 0.0 or age_s > config.max_age_s:
+        return ScanDebounceState(True, 0, stamp), True
+    if not state.stale_latched:
+        return ScanDebounceState(False, 0, stamp), False
+    if age_s > config.recover_age_s:
+        return ScanDebounceState(True, 0, stamp), True
+    if (
+        stamp_ns is not None
+        and stamp_ns > 0
+        and state.fresh_consec > 0
+        and stamp_ns <= state.last_stamp_ns
+    ):
+        return ScanDebounceState(True, state.fresh_consec, state.last_stamp_ns), True
+    required = config.recover_count
+    consec = state.fresh_consec + 1
+    if consec >= required:
+        return ScanDebounceState(False, 0, stamp), False
+    return ScanDebounceState(True, consec, stamp), True
+
+
+@dataclass(frozen=True, slots=True)
 class WatchdogState:
     """Independent latches for command timeout and forward scan stops."""
 

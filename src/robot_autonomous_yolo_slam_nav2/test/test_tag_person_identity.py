@@ -68,3 +68,40 @@ def test_long_camera_gap_requires_confirmation_even_if_track_id_is_same():
 def test_multiple_tag_candidates_do_not_guess_target():
     selector = TagPersonIdentity()
     assert selector.update((person(), person(12)), (TrackId(7), TrackId(12)), 1_000_000_000).target_observation is None
+
+
+def test_sub_two_second_absence_retains_identity_without_tag():
+    # Given a tag-locked target at t0 with lost_timeout_s=2.0.
+    selector = TagPersonIdentity(lost_timeout_s=2.0)
+    selector.update((person(),), (TrackId(7),), 1_000_000_000)
+
+    # When the target is absent for 1.9s and the same track reappears untagged.
+    selector.update((), (), 2_900_000_000)
+    assert not selector.needs_confirmation((person(),), 2_900_000_000)
+    result = selector.update((person(),), (), 2_900_000_000)
+
+    # Then the lock is retained without any tag evidence.
+    assert result.state is TargetState.TRACKING
+    assert result.target_observation == person()
+
+
+def test_two_second_absence_clears_identity_until_fresh_tag():
+    # Given a tag-locked target at t0 with lost_timeout_s=2.0.
+    selector = TagPersonIdentity(lost_timeout_s=2.0)
+    selector.update((person(),), (TrackId(7),), 1_000_000_000)
+
+    # When the target is absent for exactly 2.0s and reappears untagged.
+    selector.update((), (), 3_000_000_000)
+    assert selector.needs_confirmation((person(),), 3_000_000_000)
+    cleared = selector.update((person(),), (), 3_000_000_000)
+
+    # Then the lock is cleared and no untagged person relocks it.
+    assert cleared.target_observation is None
+
+    # When a fresh unique tag ID 0 association arrives for the same track.
+    relocked = selector.update((person(),), (TrackId(7),), 3_100_000_000)
+
+    # Then the target relocks immediately.
+    assert relocked.state is TargetState.TRACKING
+    assert relocked.target_observation == person()
+    assert relocked.forward_motion_allowed

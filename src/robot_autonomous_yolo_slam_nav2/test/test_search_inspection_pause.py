@@ -113,26 +113,48 @@ def test_hold_cancels_in_flight_spin(monkeypatch) -> None:
         cancelled: list = []
 
         class FakeSpin:
+            def __init__(self):
+                self._callback = None
+
             def cancel_goal_async(self):
                 cancelled.append(True)
-                done = SimpleNamespace()
+                holder: list = []
 
                 class Done:
-                    def add_done_callback(self, _cb):
+                    def add_done_callback(inner_self, cb):
+                        holder.append(cb)
                         return None
 
+                self._callback_holder = holder
                 return Done()
 
-        monkeypatch.setattr(node, "_active_spin", FakeSpin(), raising=False)
+        spin = FakeSpin()
+        monkeypatch.setattr(node, "_active_spin", spin, raising=False)
         now_ns = node.get_clock().now().nanoseconds
         _fresh_obs(node, 7, now_ns)
 
         node._spin_search(now_ns, True)
 
         assert cancelled == [True]
-        assert node._active_spin is None
+        assert node._active_spin is spin
+        assert node._spin_cancel_pending is True
         assert spin_sent == []
         assert statuses[-1] == ("searching", "search_inspecting")
+        from rclpy.task import Future
+        from types import SimpleNamespace
+
+        done: Future = Future()
+        done.set_result(SimpleNamespace(goals_canceling=[]))
+        assert len(spin._callback_holder) == 1
+        spin._callback_holder[0](done)
+        assert node._active_spin is spin
+        assert node._spin_cancel_pending is True
+        assert spin_sent == []
+        result: Future = Future()
+        result.set_result(SimpleNamespace(status=4))
+        node._spin_result_callback(result)
+        assert node._active_spin is None
+        assert node._spin_cancel_pending is False
     finally:
         node.destroy_node()
         rclpy.shutdown()

@@ -86,6 +86,10 @@ class Nav2PersonFollowRuntime(Nav2PersonFollowActions, Nav2PersonFollowSpinActio
         self._pending_spin: Future | None = None
         self._active_spin: ClientGoalHandle | None = None
         self._pending_spin_yaw = 0.0
+        self._spin_cancel_requested = False
+        self._spin_cancel_timed_out = False
+        self._spin_cancel_pending = False
+        self._spin_cancel_deadline_ns = 0
         self._guide_active = False
         self._guide_yielded = False
         self._person_obs: dict[int, int] = {}
@@ -277,6 +281,12 @@ class Nav2PersonFollowRuntime(Nav2PersonFollowActions, Nav2PersonFollowSpinActio
             self._inspection_ids = set()
             self._inspection_done_ids = set()
             self._cancel_spin()
+        if self._spin_handoff_blocked(now_ns):
+            if self._spin_cancel_timed_out:
+                self._publish_status("following", "following_spin_cancel_timeout")
+            else:
+                self._publish_status("following", "following_spin_cancelling")
+            return
         follow_config = self._follow_config()
         fresh_range: float | None = None
         if (
@@ -384,11 +394,20 @@ class Nav2PersonFollowRuntime(Nav2PersonFollowActions, Nav2PersonFollowSpinActio
             self._last_spin_ns = now_ns
             self._publish_status("searching", "search_riding_nav2_goal")
             return
+        self._resolve_spin_cancel_timeout(now_ns)
         if self._inspect_people(now_ns):
             return
-        if self._pending_spin is not None or self._active_spin is not None:
+        if (
+            self._pending_spin is not None
+            or self._active_spin is not None
+            or self._spin_cancel_requested
+            or self._spin_cancel_pending
+        ):
             self._last_spin_ns = now_ns
-            self._publish_status("searching", "search_spinning")
+            if self._spin_cancel_timed_out:
+                self._publish_status("searching", "search_spin_cancel_timeout")
+            else:
+                self._publish_status("searching", "search_spinning")
             return
         timeout_s = self._float_parameter("search_timeout_s")
         if timeout_s > 0.0 and (now_ns - self._lost_since_ns) / 1_000_000_000.0 > timeout_s:

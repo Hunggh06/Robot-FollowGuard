@@ -54,6 +54,15 @@ from .zone_guide_logic import (
 )
 
 
+def _normalize_say(text: str) -> str:
+    """Normalize speech text for own-prompt echo comparison.
+
+    Lowercase with collapsed whitespace so STT spacing noise does not
+    defeat the filter. Diacritics are preserved.
+    """
+    return " ".join(text.strip().lower().split())
+
+
 class ZoneGuardRuntime(Node):
     """Guard the red zone; guide home on confirmed violation."""
 
@@ -81,7 +90,10 @@ class ZoneGuardRuntime(Node):
         self._outside_accum_s = 0.0
         self._last_repeat_ns = 0
         self._confirm_pending = False
+        self._confirm_ns = 0
         self._last_say_ns = 0
+        self._last_say_text = ""
+        self._recent_say: list[tuple[str, int]] = []
         self._pending_say: str | None = None
         self._guide_active = False
         self._guide_pending = None
@@ -99,6 +111,11 @@ class ZoneGuardRuntime(Node):
         self._last_spin_ns = 0
         self._verify_pending = None
         self._verify_handle: ClientGoalHandle | None = None
+        self._verify_cancel_requested = False
+        self._verify_cancel_pending = False
+        self._guide_cancel_requested = False
+        self._guide_cancel_pending = False
+        self._guide_replan_queued = False
         self._target: PersonTarget | None = None
         self._scan_points: tuple[tuple[float, float], ...] | None = None
         self._scan_stamp_ns = 0
@@ -155,12 +172,15 @@ class ZoneGuardRuntime(Node):
         self.declare_parameter("max_target_age_s", 1.0)
         self.declare_parameter("max_scan_age_s", 0.25)
         self.declare_parameter("confirm_keyword", "xác nhận")
+        self.declare_parameter("confirm_valid_s", 30.0)
         self.declare_parameter("confirm_ignore_after_say_s", 3.0)
+        self.declare_parameter("confirm_ignore_per_char_s", 0.12)
+        self.declare_parameter("confirm_echo_window_s", 20.0)
         self.declare_parameter("guide_return_x", 0.0)
         self.declare_parameter("guide_return_y", 0.0)
         self.declare_parameter("guide_return_yaw", 0.0)
         self.declare_parameter("guide_return_override", False)
-        self.declare_parameter("guide_max_vel_x", 0.15)
+        self.declare_parameter("guide_max_vel_x", 0.25)
         self.declare_parameter("search_spin_default_rate_rad_s", 0.7)
         self.declare_parameter("search_spin_min_rate_rad_s", 0.51)
         self.declare_parameter("search_spin_max_rate_rad_s", 1.4)
@@ -182,6 +202,7 @@ class ZoneGuardRuntime(Node):
             return
         point = self._to_map(message)
         if point is None:
+            self._publish_status("draw", "draw_click_tf_unavailable")
             return
         self._clicks.append(point)
         self._publish_clicks()
@@ -199,16 +220,41 @@ class ZoneGuardRuntime(Node):
                 f"{int(str(self.get_parameter('zone_click_points').value))}")
 
     def _confirm_callback(self, message: String) -> None:
-        # The phone mic hears our own speaker: ignore anything arriving
-        # within confirm_ignore_after_say_s of our last spoken line.
-        ignore_s = float(str(self.get_parameter("confirm_ignore_after_say_s").value))
-        if (self.get_clock().now().nanoseconds - self._last_say_ns) / 1_000_000_000.0 < ignore_s:
+        # The phone mic hears our own speaker, and our own questions contain
+        # the keyword, so two layers guard the confirmation:
+        # 1. a speech-duration-scaled ignore window measured from publish
+        #    (TTS speech + STT latency outlast the fixed base window), and
+        # 2. an echo filter dropping texts that contain a recently spoken
+        #    prompt verbatim (late full-sentence echoes).
+        now_ns = self.get_clock().now().nanoseconds
+        base_s = float(str(self.get_parameter("confirm_ignore_after_say_s").value))
+        per_char_s = float(str(self.get_parameter("confirm_ignore_per_char_s").value))
+        window_s = base_s + len(self._last_say_text) * per_char_s
+        if (now_ns - self._last_say_ns) / 1_000_000_000.0 < window_s:
+            return
+        text = str(message.data)
+        if self._is_own_echo(text, now_ns):
             return
         if confirm_match(
-            str(message.data),
+            text,
             str(self.get_parameter("confirm_keyword").value),
         ):
             self._confirm_pending = True
+            self._confirm_ns = now_ns
+
+    def _is_own_echo(self, text: str, now_ns: int) -> bool:
+        """True when the text contains a recently spoken prompt verbatim."""
+        window_s = float(str(self.get_parameter("confirm_echo_window_s").value))
+        incoming = _normalize_say(text)
+        if not incoming:
+            return False
+        for prompt, said_ns in self._recent_say:
+            if (now_ns - said_ns) / 1_000_000_000.0 > window_s:
+                continue
+            prompt_norm = _normalize_say(prompt)
+            if prompt_norm and prompt_norm in incoming:
+                return True
+        return False
 
     def _reset_zone(self, _req: Trigger.Request, resp: Trigger.Response) -> Trigger.Response:
         self._clicks = []
@@ -217,24 +263,49 @@ class ZoneGuardRuntime(Node):
         self._outside_accum_s = 0.0
         self._spin_accum_rad = 0.0
         self._confirm_pending = False
-        if self._guide_handle is not None:
-            try:
-                self._guide_handle.cancel_goal_async()
-            except Exception:  # noqa: BLE001
-                pass
-            self._guide_handle = None
-        self._guide_pending = None
+        self._confirm_ns = 0
+        # Reset clears UI/zone state immediately but retains action ownership:
+        # the old guide/verify handoff stays cancelled-and-owned while IDLE
+        # and blocks every new motion goal until its terminal result lands,
+        # so reset-then-immediate-guide can never double-command the server.
+        self._cancel_guide_handoff()
+        self._guide_replan_queued = False
+        self._cancel_verify_goal()
         self._guide_active = False
         self._guide_done = False
         self._guide_succeeded = False
         self._guide_fails = 0
         self._guide_poly = None
-        self._cancel_verify_goal()
         self._restore_speed()
         self._publish_clicks()
         resp.success = True
         resp.message = "red zone cleared; click 4 corners in RViz to redraw"
         return resp
+
+    def _cancel_guide_handoff(self) -> None:
+        """Request guide cancellation without dropping owned futures.
+
+        A pending send stays owned until the server accepts or rejects it;
+        the response cancels on acceptance. An active goal gets one cancel
+        request and stays owned until its terminal result.
+        """
+        if self._guide_pending is not None:
+            self._guide_cancel_requested = True
+        if self._guide_handle is not None and not self._guide_cancel_pending:
+            try:
+                self._guide_handle.cancel_goal_async()
+            except Exception:  # noqa: BLE001
+                pass
+            self._guide_cancel_pending = True
+
+    def _guide_handoff_busy(self) -> bool:
+        """True while an old guide goal still owns the handoff."""
+        return (
+            self._guide_pending is not None
+            or self._guide_handle is not None
+            or self._guide_cancel_requested
+            or self._guide_cancel_pending
+        )
 
     def _to_map(self, message: PointStamped) -> tuple[float, float] | None:
         map_frame = str(self.get_parameter("map_frame").value)
@@ -290,7 +361,11 @@ class ZoneGuardRuntime(Node):
             message = String()
             message.data = self._pending_say
             self._say_pub.publish(message)
-            self._last_say_ns = self.get_clock().now().nanoseconds
+            said_ns = self.get_clock().now().nanoseconds
+            self._last_say_ns = said_ns
+            self._last_say_text = message.data
+            self._recent_say.append((_normalize_say(message.data), said_ns))
+            del self._recent_say[:-4]
             self._pending_say = None
         if self._polygon is None:
             if self._phase != "IDLE":
@@ -319,6 +394,9 @@ class ZoneGuardRuntime(Node):
                 self._outside_accum_s = 0.0
                 self._enter("ARMED", now_ns)
                 return
+            if self._guide_handoff_busy():
+                self._publish_status("violation", "violation_handoff_busy")
+                return
             if self._consume_confirm():
                 self._start_guide(now_ns)
                 return
@@ -335,6 +413,9 @@ class ZoneGuardRuntime(Node):
                     position[0], position[1], self._polygon):
                 self._outside_accum_s = 0.0
                 self._enter("ARMED", now_ns)
+                return
+            if self._guide_handoff_busy():
+                self._publish_status("wait_confirm", "wait_confirm_handoff_busy")
                 return
             if self._consume_confirm():
                 self._start_guide(now_ns)
@@ -354,6 +435,8 @@ class ZoneGuardRuntime(Node):
                 self._last_spin_ns = now_ns
                 self._verify_pending = None
                 self._verify_handle = None
+                self._verify_cancel_requested = False
+                self._verify_cancel_pending = False
                 return
             if self._guide_fails >= 3:
                 self._publish_status("guide_nav", "guide_goal_unreachable_hold")
@@ -361,13 +444,16 @@ class ZoneGuardRuntime(Node):
             if self._polygon is not None and self._polygon != self._guide_poly:
                 self._guide_poly = self._polygon
                 self._guide_fails = 0
-                if self._guide_handle is not None:
+                if self._guide_pending is not None:
+                    self._guide_cancel_requested = True
+                if self._guide_handle is not None and not self._guide_cancel_pending:
                     try:
                         self._guide_handle.cancel_goal_async()
                     except Exception:  # noqa: BLE001
                         pass
-                    self._guide_handle = None
-                self._send_guide_goal()
+                    self._guide_cancel_pending = True
+                self._guide_replan_queued = True
+                self._flush_guide_replan()
                 self._publish_status("guide_nav", "guide_replanned_zone_moved")
                 return
             self._publish_status("guide_nav", "guide_driving_home")
@@ -382,6 +468,7 @@ class ZoneGuardRuntime(Node):
                     self._outside_accum_s = 0.0
                     self._enter("ARMED", now_ns)
                 else:
+                    self._release_guide()
                     self._outside_accum_s = 0.0
                     self._enter("VIOLATION", now_ns)
                     self._say(SAY_VIOLATION)
@@ -396,16 +483,25 @@ class ZoneGuardRuntime(Node):
     def _consume_confirm(self) -> bool:
         if self._confirm_pending:
             self._confirm_pending = False
-            return True
+            valid_s = float(str(self.get_parameter("confirm_valid_s").value))
+            age_s = (self.get_clock().now().nanoseconds - self._confirm_ns) / 1_000_000_000.0
+            if 0.0 <= age_s <= valid_s:
+                return True
         return False
 
     def _start_guide(self, now_ns: int) -> None:
+        if self._guide_handoff_busy():
+            self._publish_status("guide_nav", "guide_start_blocked_handoff")
+            return
         self._say(SAY_GUIDE_CONFIRMED)
         self._guide_active = True
         self._guide_done = False
         self._guide_succeeded = False
         self._guide_fails = 0
         self._guide_poly = self._polygon
+        self._guide_cancel_requested = False
+        self._guide_cancel_pending = False
+        self._guide_replan_queued = False
         self._limit_speed()
         self._send_guide_goal()
         self._enter("GUIDE_NAV", now_ns)
@@ -441,6 +537,15 @@ class ZoneGuardRuntime(Node):
         from nav2_msgs.action import NavigateToPose
         if self._guide_fails >= 3:
             return
+        if not self._guide_active:
+            return
+        if (
+            self._guide_pending is not None
+            or self._guide_handle is not None
+            or self._guide_cancel_requested
+            or self._guide_cancel_pending
+        ):
+            return
         point = self._guide_goal_point()
         if point is None:
             return
@@ -454,13 +559,28 @@ class ZoneGuardRuntime(Node):
         pose.pose.orientation.w = math.cos(point[2] / 2.0)
         goal.pose = pose
         if not self._action_client.server_is_ready():
-            self._guide_pending = None
             return
         pending = self._action_client.send_goal_async(goal)
         self._guide_pending = pending
         pending.add_done_callback(self._guide_response_callback)
 
+    def _flush_guide_replan(self) -> None:
+        """Send the queued replan once the old goal reached terminal state."""
+        if not self._guide_replan_queued:
+            return
+        if self._guide_handoff_busy():
+            return
+        self._guide_replan_queued = False
+        self._send_guide_goal()
+
     def _guide_response_callback(self, future) -> None:  # type: ignore[no-untyped-def]
+        """Own the pending guide send until the server accepts or rejects it.
+
+        An acceptance installs the handle and — when a cancel was requested
+        meanwhile (replan, reset, new-zone flow) — cancels it at once and
+        keeps awaiting the terminal result. The queued replan, if any, is
+        only flushed after that terminal result, never before.
+        """
         self._guide_pending = None
         try:
             error = future.exception()
@@ -469,21 +589,40 @@ class ZoneGuardRuntime(Node):
         if error is not None:
             self._guide_fails += 1
             self.get_logger().warning("guide goal request failed; will retry")
-            self._send_guide_goal()
+            if self._guide_replan_queued:
+                self._flush_guide_replan()
+            else:
+                self._send_guide_goal()
             return
         handle = future.result()
         if handle is None or not handle.accepted:
             self._guide_fails += 1
             self.get_logger().warning("guide goal rejected; will retry")
-            self._send_guide_goal()
+            if self._guide_replan_queued:
+                self._flush_guide_replan()
+            else:
+                self._send_guide_goal()
             return
         self._guide_handle = handle
         result_future = handle.get_result_async()
-        result_future.add_done_callback(self._guide_result_callback)
+        result_future.add_done_callback(
+            lambda done, owned=handle: self._guide_result_callback(done, owned))
+        if self._guide_cancel_requested:
+            self._guide_cancel_requested = False
+            try:
+                handle.cancel_goal_async()
+            except Exception:  # noqa: BLE001
+                pass
+            self._guide_cancel_pending = True
 
-    def _guide_result_callback(self, future) -> None:  # type: ignore[no-untyped-def]
+    def _guide_result_callback(self, future, handle=None) -> None:  # type: ignore[no-untyped-def]
         from action_msgs.msg import GoalStatus
+        if handle is not None and self._guide_handle is not handle:
+            self.get_logger().error("Stale guide result ignored; newer goal owns the handoff")
+            return
         self._guide_handle = None
+        self._guide_cancel_requested = False
+        self._guide_cancel_pending = False
         try:
             result = future.result()
         except Exception:  # noqa: BLE001
@@ -491,10 +630,14 @@ class ZoneGuardRuntime(Node):
         if result is not None and result.status == GoalStatus.STATUS_SUCCEEDED:
             self._guide_done = True
             self._guide_succeeded = True
+            self._guide_replan_queued = False
         else:
             self._guide_fails += 1
             self.get_logger().warning("guide goal ended unsucceeded; retrying")
-            self._send_guide_goal()
+            if self._guide_replan_queued:
+                self._flush_guide_replan()
+            else:
+                self._send_guide_goal()
 
     def _set_controller_param(self, name: str, value: float) -> None:
         """Best-effort set a double parameter on the controller server."""
@@ -566,6 +709,7 @@ class ZoneGuardRuntime(Node):
                 self._enter("ARMED", now_ns)
                 return
             self._cancel_verify_goal()
+            self._release_guide()
             self._outside_accum_s = 0.0
             self._enter("VIOLATION", now_ns)
             self._say(SAY_VIOLATION)
@@ -602,6 +746,9 @@ class ZoneGuardRuntime(Node):
             return
         if self._verify_pending is not None or self._verify_handle is not None:
             self._publish_status("verify", "verify_spinning")
+            return
+        if self._verify_cancel_requested or self._verify_cancel_pending:
+            self._publish_status("verify", "verify_cancelling")
             return
         pose = robot_map_pose(
             self._tf_buffer,
@@ -640,50 +787,81 @@ class ZoneGuardRuntime(Node):
         pose_msg.pose.orientation.z = math.sin(target_yaw / 2.0)
         pose_msg.pose.orientation.w = math.cos(target_yaw / 2.0)
         goal.pose = pose_msg
+        if self._verify_handoff_busy():
+            return
         pending = self._action_client.send_goal_async(goal)
         self._verify_pending = pending
         pending.add_done_callback(self._verify_response_callback)
         self._spin_accum_rad += abs(step_rad)
 
+    def _verify_handoff_busy(self) -> bool:
+        """True while an old verify goal still owns the handoff."""
+        return (
+            self._verify_pending is not None
+            or self._verify_handle is not None
+            or self._verify_cancel_requested
+            or self._verify_cancel_pending
+        )
+
     def _verify_response_callback(self, future) -> None:  # type: ignore[no-untyped-def]
+        """Own the pending verify send until the server accepts or rejects it."""
         self._verify_pending = None
         try:
             error = future.exception()
         except Exception:  # noqa: BLE001
             error = True
         if error is not None:
+            self._verify_cancel_requested = False
             self._verify_handle = None
             return
         try:
             handle = future.result()
         except Exception:  # noqa: BLE001
+            self._verify_cancel_requested = False
             self._verify_handle = None
             return
         if handle is None or not handle.accepted:
+            self._verify_cancel_requested = False
             self._verify_handle = None
             return
         self._verify_handle = handle
         try:
             result_future = handle.get_result_async()
-            result_future.add_done_callback(self._verify_result_callback)
+            result_future.add_done_callback(
+                lambda done, owned=handle: self._verify_result_callback(done, owned))
         except Exception:  # noqa: BLE001
             self._verify_handle = None
+            self._verify_cancel_requested = False
+            return
+        if self._verify_cancel_requested:
+            self._verify_cancel_requested = False
+            try:
+                handle.cancel_goal_async()
+            except Exception:  # noqa: BLE001
+                pass
+            self._verify_cancel_pending = True
 
-    def _verify_result_callback(self, future) -> None:  # type: ignore[no-untyped-def]
+    def _verify_result_callback(self, future, handle=None) -> None:  # type: ignore[no-untyped-def]
+        if handle is not None and self._verify_handle is not handle:
+            self.get_logger().error("Stale verify result ignored; newer goal owns the handoff")
+            return
         self._verify_handle = None
+        self._verify_cancel_requested = False
+        self._verify_cancel_pending = False
         try:
             future.result()
         except Exception:  # noqa: BLE001
             return
 
     def _cancel_verify_goal(self) -> None:
-        if self._verify_handle is not None:
+        if self._verify_pending is not None:
+            self._verify_cancel_requested = True
+        if self._verify_handle is not None and not self._verify_cancel_pending:
             try:
                 self._verify_handle.cancel_goal_async()
             except Exception:  # noqa: BLE001
                 pass
-            self._verify_handle = None
-        self._verify_pending = None
+            self._verify_cancel_pending = True
 
     def _publish_clicks(self) -> None:
         """Show each clicked corner as a red sphere while drawing."""

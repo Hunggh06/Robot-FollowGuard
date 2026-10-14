@@ -26,6 +26,7 @@ def generate_launch_description() -> LaunchDescription:
     slam_launch = os.path.join(package_dir, "launch", "slam_nav.launch.py")
     use_slam = LaunchConfiguration("use_slam")
     calibration_file = LaunchConfiguration("calibration_file")
+    identity_mode = LaunchConfiguration("identity_mode")
     return LaunchDescription(
         [
             DeclareLaunchArgument(
@@ -37,6 +38,11 @@ def generate_launch_description() -> LaunchDescription:
                 "calibration_file",
                 default_value=calibration_default,
                 description="Measured ROS CameraInfo YAML.",
+            ),
+            DeclareLaunchArgument(
+                "identity_mode",
+                default_value="apriltag",
+                description="YOLO identity check: reid gallery, color_bands, or apriltag rollback.",
             ),
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(slam_launch),
@@ -74,7 +80,7 @@ def generate_launch_description() -> LaunchDescription:
                 executable="yolo_target_node.py",
                 name="yolo_target_node",
                 output="screen",
-                parameters=[config_path],
+                parameters=[config_path, {"identity_mode": identity_mode}],
             ),
             Node(
                 package="robot_autonomous_yolo_slam_nav2",

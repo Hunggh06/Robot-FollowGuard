@@ -84,6 +84,8 @@ def test_image_callback_stamps_host_clock_and_uses_camera_frame() -> None:
         image = Image()
         image.header.stamp.sec = 123
         image.header.stamp.nanosec = 456789
+        image.width = 320
+        image.height = 240
 
         node._image_callback(image)
 
@@ -104,6 +106,44 @@ def test_image_callback_stamps_host_clock_and_uses_camera_frame() -> None:
     assert camera_info.height == 240
     assert camera_info.k[0] == pytest.approx(136.9219816928559)
     assert camera_info.d == pytest.approx(calibration.distortion_coefficients)
+
+
+def test_image_callback_scales_intrinsics_for_640x480() -> None:
+    rclpy.init(args=["--ros-args", "-p", f"calibration_file:={CALIBRATION_PATH}"])
+    node = CameraInfoPublisherNode()
+    try:
+        publisher = _PublisherSpy()
+        setattr(node, "_camera_info_publisher", publisher)
+        image = Image()
+        image.width = 640
+        image.height = 480
+        node._image_callback(image)
+        assert len(publisher.messages) == 1
+        camera_info = publisher.messages[0]
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+    calibration = load_camera_calibration(CALIBRATION_PATH)
+    assert camera_info.header.frame_id == "phone_camera_back"
+    assert camera_info.width == 640
+    assert camera_info.height == 480
+    assert camera_info.k[0] == pytest.approx(calibration.camera_matrix[0] * 2.0)
+    assert camera_info.k[2] == pytest.approx(calibration.camera_matrix[2] * 2.0)
+    assert camera_info.k[4] == pytest.approx(calibration.camera_matrix[4] * 2.0)
+    assert camera_info.k[5] == pytest.approx(calibration.camera_matrix[5] * 2.0)
+    assert camera_info.p[0] == pytest.approx(calibration.projection_matrix[0] * 2.0)
+    assert camera_info.p[2] == pytest.approx(calibration.projection_matrix[2] * 2.0)
+    assert camera_info.p[5] == pytest.approx(calibration.projection_matrix[5] * 2.0)
+    assert camera_info.p[6] == pytest.approx(calibration.projection_matrix[6] * 2.0)
+    assert camera_info.d == pytest.approx(calibration.distortion_coefficients)
+    assert list(camera_info.r) == pytest.approx(list(calibration.rectification_matrix))
+    assert camera_info.binning_x == calibration.binning_x
+    assert camera_info.binning_y == calibration.binning_y
+    assert camera_info.roi.x_offset == 0
+    assert camera_info.roi.y_offset == 0
+    assert camera_info.roi.width == 0
+    assert camera_info.roi.height == 0
+    assert camera_info.roi.do_rectify is False
 
 
 def test_empty_default_node_does_not_create_publisher() -> None:

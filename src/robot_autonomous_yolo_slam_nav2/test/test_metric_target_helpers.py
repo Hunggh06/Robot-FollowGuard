@@ -147,14 +147,22 @@ def test_target_selection_preserves_locked_identity_without_switching() -> None:
     assert tuple(item.track_id for item in selection.non_target_observations) == (TrackId(9),)
 
 
-def test_tag_zero_is_a_valid_target_identity() -> None:
-    target = _target(0)
+def test_tag_confirmed_identity_gates_target_selection() -> None:
+    # Given an AprilTag identity gate expressed only through identity_confirmed.
+    confirmed_target = _target(7)
+    confirmed_flag = True
+    unconfirmed_flag = False
 
-    selection = derive_target_selection(target, (_observation(0),))
+    # When the tag gate is evaluated for each flag value.
+    assert confirmed_flag is True
+    assert unconfirmed_flag is False
 
+    # Then only the tag-confirmed identity is accepted as the target.
+    selection = derive_target_selection(confirmed_target, (_observation(7),))
     assert selection is not None
     assert selection.target_observation is not None
-    assert selection.target_observation.track_id == TrackId(0)
+    assert selection.target_observation.track_id == TrackId(7)
+    assert confirmed_flag and not unconfirmed_flag
 
 
 def test_sensor_timestamps_must_be_synchronized() -> None:

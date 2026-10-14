@@ -81,19 +81,19 @@ controller_server:
     general_goal_checker:
       stateful: true
       plugin: nav2_controller::SimpleGoalChecker
-      xy_goal_tolerance: 0.25
-      yaw_goal_tolerance: 0.10
+      xy_goal_tolerance: 0.35
+      yaw_goal_tolerance: 0.30
     FollowPath:
       plugin: dwb_core::DWBLocalPlanner
       debug_trajectory_details: true
-      min_vel_x: -0.10
-      max_vel_x: 0.25
+      min_vel_x: -0.15
+      max_vel_x: 0.35
       max_vel_y: 0.0
-      max_vel_theta: 1.0
-      min_speed_xy: 0.02
-      max_speed_xy: 0.25
+      max_vel_theta: 1.73
+      min_speed_xy: 0.09
+      max_speed_xy: 0.35
       transform_tolerance: 2.0
-      min_speed_theta: 0.05
+      min_speed_theta: 1.08
       acc_lim_x: 1.5
       acc_lim_y: 0.0
       acc_lim_theta: 1.5
@@ -106,8 +106,8 @@ controller_server:
       sim_time: 2.0
       linear_granularity: 0.025
       angular_granularity: 0.025
-      xy_goal_tolerance: 0.25
-      trans_stopped_velocity: 0.05
+      xy_goal_tolerance: 0.35
+      trans_stopped_velocity: 0.09
       short_circuit_trajectory_evaluation: true
       stateful: true
       critics:
@@ -127,7 +127,7 @@ controller_server:
       Oscillation.oscillation_reset_time: 1.0
       Oscillation.scale: 2.0
       GoalDist.scale: 12.0
-      RotateToGoal.scale: 6.0
+      RotateToGoal.scale: 2.0
       RotateToGoal.slowing_factor: 3.0
       RotateToGoal.lookahead_time: -1.0
 local_costmap:
@@ -263,7 +263,7 @@ planner_server:
     - GridBased
     GridBased:
       plugin: nav2_smac_planner/SmacPlanner2D
-      tolerance: 0.25
+      tolerance: 0.35
       allow_unknown: false
       cost_travel_multiplier: 12.0
       resolution: 0.05
@@ -295,7 +295,7 @@ behavior_server:
     backup:
       plugin: nav2_behaviors/BackUp
       backup_dist: 0.15
-      backup_speed: 0.10
+      backup_speed: 0.15
       frequency: 20.0
     drive_on_heading:
       plugin: nav2_behaviors/DriveOnHeading
@@ -308,8 +308,8 @@ behavior_server:
     transform_tolerance: 0.1
     use_sim_time: false
     simulate_ahead_time: 2.0
-    max_rotational_vel: 1.0
-    min_rotational_vel: 0.4
+    max_rotational_vel: 1.73
+    min_rotational_vel: 1.08
     rotational_acc_lim: 3.2
 robot_state_publisher:
   ros__parameters:
@@ -331,13 +331,13 @@ velocity_smoother:
     scale_velocities: false
     feedback: OPEN_LOOP
     max_velocity:
-    - 0.25
+    - 0.35
     - 0.0
-    - 1.0
+    - 1.73
     min_velocity:
-    - -0.10
+    - -0.15
     - 0.0
-    - -1.0
+    - -1.73
     max_accel:
     - 2.5
     - 0.0

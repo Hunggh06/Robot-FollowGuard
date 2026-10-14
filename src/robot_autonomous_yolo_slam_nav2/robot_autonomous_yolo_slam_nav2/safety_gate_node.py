@@ -19,8 +19,11 @@ from tf2_ros import (
 from .clearance_logic import ClearancePolicy
 from .safety_gate_logic import (
     GateConfig,
+    ScanDebounceConfig,
+    ScanDebounceState,
     TwistCommand,
     WatchdogState,
+    debounce_scan_stale,
     gate_command,
     scan_to_base_points,
     watchdog_step,
@@ -40,6 +43,7 @@ class SafetyGateNode(Node):
         self._last_cmd_ns = 0
         self._last_command_linear_x = 0.0
         self._watchdog_state = WatchdogState()
+        self._debounce_state = ScanDebounceState()
         self._publisher = self.create_publisher(
             Twist,
             str(self.get_parameter("output_topic").value),
@@ -69,6 +73,8 @@ class SafetyGateNode(Node):
         self.declare_parameter("slow_delta_m", 0.3)
         self.declare_parameter("corridor_half_width_m", 0.22)
         self.declare_parameter("max_scan_age_s", 0.25)
+        self.declare_parameter("scan_recover_age_s", 0.20)
+        self.declare_parameter("scan_recover_count", 3)
         self.declare_parameter("command_timeout_s", 0.25)
         self.declare_parameter("tf_timeout_s", 0.1)
         self.declare_parameter("slow_scale", 0.5)
@@ -124,11 +130,42 @@ class SafetyGateNode(Node):
         if publish_zero:
             self._publisher.publish(Twist())
 
-    def _fresh_scan_points(self, now_ns: int) -> tuple[tuple[float, float], ...] | None:
+    def _debounce_config(self) -> ScanDebounceConfig:
+        try:
+            recover_count = int(str(self.get_parameter("scan_recover_count").value))
+        except (TypeError, ValueError, OverflowError):
+            recover_count = 3
+        try:
+            max_age = float(str(self.get_parameter("max_scan_age_s").value))
+        except (TypeError, ValueError, OverflowError):
+            max_age = 0.0
+        try:
+            recover_age = float(str(self.get_parameter("scan_recover_age_s").value))
+        except (TypeError, ValueError, OverflowError):
+            recover_age = 0.0
+        return ScanDebounceConfig(
+            max_age_s=max_age,
+            recover_age_s=recover_age,
+            recover_count=recover_count,
+        ).normalized()
+
+    def _scan_age_s(self, now_ns: int) -> float | None:
         if self._scan_points is None or self._scan_stamp_ns <= 0:
             return None
-        age_ns = now_ns - self._scan_stamp_ns
-        if age_ns < 0 or age_ns > self._float_parameter("max_scan_age_s") * 1_000_000_000:
+        return (now_ns - self._scan_stamp_ns) / 1_000_000_000.0
+
+    def _fresh_scan_points(self, now_ns: int) -> tuple[tuple[float, float], ...] | None:
+        # Fail-closed hysteresis: stale latches immediately, recovery needs
+        # consecutive distinct clearly-fresh scans; stale always maps to None
+        # so the gate publishes exact zero forward velocity, never a reduced
+        # one. The scan stamp keys the counter so the command callback plus
+        # the watchdog tick cannot double-count one sample.
+        age_s = self._scan_age_s(now_ns)
+        stamp = self._scan_stamp_ns if self._scan_stamp_ns > 0 else None
+        self._debounce_state, is_stale = debounce_scan_stale(
+            self._debounce_state, age_s, self._debounce_config(), stamp
+        )
+        if is_stale:
             return None
         return self._scan_points
 

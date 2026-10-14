@@ -25,9 +25,14 @@ def test_upscaled_person_crop_detects_tag_and_restores_original_pixel_coordinate
 
 
 def test_tag_outside_people_is_not_used_for_confirmation():
+    # Given a tag placed fully outside the only person bbox.
     people = (TrackObservation(TrackId(7), 0.9, (180., 30., 280., 230.)),)
+
+    # When ROI-only detection runs over the frame.
     tags = PersonTagDetector().detect(tagged_image(), people)
-    assert len(tags) == 1 and tags[0].tag_id == 0
+
+    # Then no tag is reported and nothing can confirm a target.
+    assert tags == ()
     assert tagged_tracks(people, tags, 0) == ()
 
 
@@ -43,3 +48,12 @@ def test_tag_inside_two_overlapping_people_is_rejected():
     tags = PersonTagDetector().detect(tagged_image(), people)
     assert len(tags) == 1
     assert tagged_tracks(people, tags, 0) == ()
+
+
+def test_detector_never_scans_without_people():
+    # Given a frame holding a tag but zero person observations.
+    # When detection runs with no person ROIs.
+    tags = PersonTagDetector().detect(tagged_image(), ())
+
+    # Then no tag is reported because there is no person ROI to search.
+    assert tags == ()

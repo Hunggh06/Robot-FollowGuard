@@ -19,7 +19,6 @@ def test_runtime_assets_are_present() -> None:
         PACKAGE_DIR / "launch" / "slam_nav.launch.py",
         PACKAGE_DIR / "launch" / "person_follow.launch.py",
         PACKAGE_DIR / "README.md",
-        PACKAGE_DIR / "REFERENCES.md",
         PACKAGE_DIR / "urdf" / "xebamnguoi.urdf",
         PACKAGE_DIR / "rviz" / "display.rviz",
         PACKAGE_DIR / "rviz" / "slam.rviz",
@@ -48,10 +47,11 @@ def test_reid_executable_is_not_installed_by_cmake() -> None:
     assert "reid_target_node.py" not in cmake_source
 
 
-def test_apriltag_executable_is_installed_by_cmake() -> None:
+def test_tag_detection_has_no_standalone_executable_in_cmake() -> None:
     cmake_source = (PACKAGE_DIR / "CMakeLists.txt").read_text()
 
-    assert "apriltag_target_node.py" in cmake_source
+    assert "apriltag_target_node.py" not in cmake_source
+    assert "apriltag_debug_image.py" not in cmake_source
 
 
 def test_yolo_executable_is_installed_by_cmake() -> None:

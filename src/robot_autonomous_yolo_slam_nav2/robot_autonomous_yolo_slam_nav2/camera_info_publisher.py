@@ -56,8 +56,23 @@ class CameraInfoPublisherNode(Node):
         publisher = self._camera_info_publisher
         if calibration is None or publisher is None:
             return
-        if (image.width != calibration.image_width
-                or image.height != calibration.image_height):
+        if (image.width > 0 and image.height > 0
+                and image.width * 3 == image.height * 4):
+            width = int(image.width)
+            height = int(image.height)
+            scale_x = width / calibration.image_width
+            scale_y = height / calibration.image_height
+            k = list(calibration.camera_matrix)
+            p = list(calibration.projection_matrix)
+            k[0] *= scale_x
+            k[2] *= scale_x
+            k[4] *= scale_y
+            k[5] *= scale_y
+            p[0] *= scale_x
+            p[2] *= scale_x
+            p[5] *= scale_y
+            p[6] *= scale_y
+        else:
             if not getattr(self, "_size_warned", False):
                 try:
                     self.get_logger().warning(
@@ -68,6 +83,10 @@ class CameraInfoPublisherNode(Node):
                 except Exception:
                     pass
                 self._size_warned = True
+            width = calibration.image_width
+            height = calibration.image_height
+            k = list(calibration.camera_matrix)
+            p = list(calibration.projection_matrix)
         try:
             frame_id = getattr(image.header, "frame_id", "")
         except Exception:
@@ -85,13 +104,13 @@ class CameraInfoPublisherNode(Node):
         # over WiFi); stamp receipt time so downstream sync compares one clock.
         message.header.stamp = self.get_clock().now().to_msg()
         message.header.frame_id = self._frame_id
-        message.width = calibration.image_width
-        message.height = calibration.image_height
+        message.width = width
+        message.height = height
         message.distortion_model = calibration.distortion_model
         message.d = list(calibration.distortion_coefficients)
-        message.k = list(calibration.camera_matrix)
+        message.k = k
         message.r = list(calibration.rectification_matrix)
-        message.p = list(calibration.projection_matrix)
+        message.p = p
         message.binning_x = calibration.binning_x
         message.binning_y = calibration.binning_y
         message.roi.x_offset = int(calibration.roi.get("x_offset", 0))

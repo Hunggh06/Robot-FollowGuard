@@ -4,40 +4,47 @@ phone_camera_info:
     camera_info_topic: /phone/camera/back/camera_info
     frame_id: phone_camera_back
 
-apriltag_target_node:
-  ros__parameters:
-    image_topic: /phone/camera/back/image
-    camera_info_topic: /phone/camera/back/camera_info
-    camera_frame: phone_camera_back
-    detections_topic: /apriltag/detections
-    tag_family: tag36h11
-    target_tag_id: 0
-    tag_size_m: 0.075
-    stable_frames: 3
-    lost_frames: 3
-    observations_topic: ~/observations
-    target_topic: ~/target
-
 yolo_target_node:
   ros__parameters:
     image_topic: /phone/camera/back/image
-    detections_topic: /apriltag/detections
     camera_frame: phone_camera_back
     model: /home/hungdo/ros2_ws/yolov8n.pt
     imgsz: 416
     conf: 0.5
     device: cpu
+    identity_mode: apriltag
     tag_family: tag36h11
     target_tag_id: 0
     tag_roi_upscale: 4.0
+    band_leg_roi_fraction: 0.5
+    band_confirm_frames: 3
+    band_min_area_px: 100.0
+    band_max_color_ratio: 0.4
+    band_min_sep_ratio: 0.25
+    band_max_dx_ratio: 0.3
+    band_red_hue_low_a: 0
+    band_red_hue_high_a: 10
+    band_red_hue_low_b: 170
+    band_red_hue_high_b: 179
+    band_red_sat_min: 70
+    band_red_val_min: 50
+    band_blue_hue_low: 90
+    band_blue_hue_high: 130
+    band_blue_sat_min: 70
+    band_blue_val_min: 50
+    reid_checkpoint: /home/hungdo/ros2_ws/models/osnet_x0_25_msmt17_combineall_256x128_amsgrad_ep150_stp60_lr0.0015_b64_fb10_softmax_labelsmooth_flip_jitter.pth
+    reid_expected_sha256: cf55163d78fc44c62c82f85ab62d39f10438679b5abe8c698ae08cfa84aa6e18
+    reid_match_threshold: 0.5
+    reid_match_margin: 0.2
+    reid_match_hz: 5.0
+    reid_min_crop_height_px: 120
+    reid_enroll_samples: 15
+    reid_enroll_timeout_s: 3.0
     lost_timeout_s: 2.0
     ambiguity_iou: 0.3
-    test_only_lock_without_tag: true
-    min_confidence: 0.5
     lost_frames: 10
     iou_match_thresh: 0.3
     annotated_topic: /person_follow/annotated
-    annotation_tag_max_skew_s: 0.1
     observations_topic: ~/observations
     target_topic: ~/target
 
@@ -66,7 +73,6 @@ metric_target_node:
 nav2_person_follow:
   ros__parameters:
     target_topic: /person_follow/target
-    obstacles_topic: /person_follow/obstacles
     observations_topic: /yolo_target_node/observations
     action_name: /navigate_to_pose
     spin_action_name: /spin
@@ -128,7 +134,7 @@ zone_guard:
     guide_return_y: 0.0
     guide_return_yaw: 0.0
     guide_return_override: false
-    guide_max_vel_x: 0.15
+    guide_max_vel_x: 0.25
     search_spin_default_rate_rad_s: 0.7
     search_spin_min_rate_rad_s: 0.51
     search_spin_max_rate_rad_s: 1.4
@@ -148,7 +154,9 @@ safety_gate:
     clearance_origin_offset_m: 0.2
     slow_delta_m: 0.3
     corridor_half_width_m: 0.22
-    max_scan_age_s: 0.25
+    max_scan_age_s: 0.60
+    scan_recover_age_s: 0.45
+    scan_recover_count: 3
     command_timeout_s: 0.25
     tf_timeout_s: 0.1
     slow_scale: 0.5

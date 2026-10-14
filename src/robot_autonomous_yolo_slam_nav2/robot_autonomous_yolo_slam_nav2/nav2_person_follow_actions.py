@@ -71,7 +71,7 @@ class _ActionRuntime(Protocol):
 
     def _report_rejected_goal(self) -> None: ...
 
-    def _result_callback(self, future: Future) -> None: ...
+    def _result_callback(self, future: Future, token: str | None = ...) -> None: ...
 
     def _send_cancel(self) -> None: ...
 
@@ -232,7 +232,9 @@ class Nav2PersonFollowActions:
             return
         self._active_goal = goal_handle
         result_future = goal_handle.get_result_async()
-        result_future.add_done_callback(self._result_callback)
+        result_future.add_done_callback(
+            lambda done, owned_token=self._active_goal_token:
+            self._result_callback(done, owned_token))
         if self._cancel_requested:
             self._send_cancel()
 
@@ -262,7 +264,10 @@ class Nav2PersonFollowActions:
             self.get_logger().error(f"NavigateToPose cancellation failed: {error}")
             self._cancel_sent = False
 
-    def _result_callback(self: _ActionRuntime, future: Future) -> None:
+    def _result_callback(self: _ActionRuntime, future: Future, token: str | None = None) -> None:
+        if token is not None and token != self._active_goal_token:
+            self.get_logger().error("Stale Nav2 result ignored; newer goal owns the handoff")
+            return
         error = future.exception()
         succeeded = False
         canceled = False

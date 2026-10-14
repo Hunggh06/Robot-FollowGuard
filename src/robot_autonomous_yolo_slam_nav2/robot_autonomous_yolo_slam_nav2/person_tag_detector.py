@@ -38,10 +38,6 @@ class PersonTagDetector:
             roi = cv2.cvtColor(frame[top:bottom, left:right], cv2.COLOR_BGR2GRAY)
             scale = max(1.0, min(self._upscale, 640.0 / max(roi.shape)))
             self._accumulate(resized_roi(roi, scale), left, top, scale, scale, tags)
-        if not tags:
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            full_scale = max(1.0, min(2.0, 640.0 / max(gray.shape)))
-            self._accumulate(resized_roi(gray, full_scale), 0, 0, full_scale, full_scale, tags)
         return tuple(tags)
 
     def _accumulate(self, resized, left: int, top: int,

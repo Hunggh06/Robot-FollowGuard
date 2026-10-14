@@ -60,7 +60,7 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'start_person_follow',
             default_value='false',
-            description='Start the AprilTag and metric person-follow nodes. '
+            description='Start the metric person-follow nodes. '
                         'Keep false when included from person_follow.launch.py '
                         '(which is the full entrypoint) to avoid duplicates.',
         ),
@@ -113,10 +113,6 @@ def generate_launch_description():
                         '0.5', '-0.5', '0.5', '-0.5',
                         'base_link', 'phone_camera_back'],
              condition=IfCondition(start_person_follow)),
-        Node(package='robot_autonomous_yolo_slam_nav2', executable='apriltag_target_node.py',
-             name='apriltag_target_node', output='screen',
-             condition=IfCondition(start_person_follow),
-             parameters=[os.path.join(pkg, 'config', 'person_follow.yaml')]),
         Node(package='robot_autonomous_yolo_slam_nav2', executable='metric_target_node.py',
              name='metric_target_node', output='screen',
              condition=IfCondition(start_person_follow),

@@ -182,6 +182,15 @@ def test_live_slam_launches_use_matching_laser_range_configuration() -> None:
     assert parameters["max_laser_range"] == 6.0
 
 
+def test_safety_gate_tolerates_one_lidar_scan_period_of_transport_jitter() -> None:
+    config = yaml.safe_load((PACKAGE_DIR / "config" / "person_follow.yaml").read_text())
+    parameters = config["safety_gate"]["ros__parameters"]
+
+    assert parameters["max_scan_age_s"] == 0.60
+    assert parameters["scan_recover_age_s"] == 0.45
+    assert parameters["scan_recover_count"] == 3
+
+
 def test_slam_nav_standalone_does_not_auto_start_person_follow() -> None:
     module = _load_launch_module("slam_nav.launch.py")
     description = module.generate_launch_description()
@@ -240,7 +249,7 @@ def test_person_follow_launch_wires_nodes_and_conditional_slam() -> None:
         assert len(node.__dict__["_Node__parameters"]) >= 1
     assert (PACKAGE_DIR / "launch" / "person_follow.launch.py").read_text().count(
         "parameters=[config_path]",
-    ) == 4
+    ) == 3
 
     # And SLAM is included behind the declared use_slam condition.
     includes = [entity for entity in description.entities if isinstance(entity, IncludeLaunchDescription)]
@@ -271,7 +280,7 @@ def test_person_follow_launch_gates_calibrated_camera_info_publisher() -> None:
     assert "calibration_file, \"' != ''\"" in launch_source
 
 
-def test_person_follow_launch_exposes_apriltag_contract_without_reid_or_home() -> None:
+def test_person_follow_launch_exposes_tag_contract_without_reid_or_home() -> None:
     module = _load_launch_module("person_follow.launch.py")
     description = module.generate_launch_description()
     nodes = _launch_nodes(description)
@@ -289,7 +298,17 @@ def test_person_follow_launch_exposes_apriltag_contract_without_reid_or_home() -
     assert parameters["camera_frame"] == "phone_camera_back"
     assert parameters["tag_family"] == "tag36h11"
     assert parameters["target_tag_id"] == 0
-    assert parameters["detections_topic"] == "/apriltag/detections"
+    assert parameters["tag_roi_upscale"] == 4.0
+    assert parameters["lost_timeout_s"] == 2.0
+    assert "detections_topic" not in parameters
+    assert "test_only_lock_without_tag" not in parameters
+    for key in parameters:
+        assert not key.startswith("scarf_"), key
+
+    launch_source = (PACKAGE_DIR / "launch" / "person_follow.launch.py").read_text()
+    config_source = (PACKAGE_DIR / "config" / "person_follow.yaml").read_text()
+    assert "/apriltag/detections" not in config_source
+    assert "/apriltag/detections" not in launch_source
 
     launch_source = (PACKAGE_DIR / "launch" / "person_follow.launch.py").read_text()
     config_source = (PACKAGE_DIR / "config" / "person_follow.yaml").read_text()
@@ -330,13 +349,13 @@ def test_zone_guard_launch_and_zone_params() -> None:
     assert parameters["leaving_verify_s"] == 2.0
     assert parameters["ask_delay_s"] == 5.0
     assert parameters["repeat_s"] == 15.0
-    assert parameters["guide_max_vel_x"] == 0.15
+    assert parameters["guide_max_vel_x"] == 0.25
     assert parameters["confirm_ignore_after_say_s"] == 3.0
     assert parameters["search_max_spin_revolutions"] == 2.0
     assert config["nav2_person_follow"]["ros__parameters"]["guide_active_topic"] == "/person_follow/guide_active"
 
 
-def test_apriltag_ros_output_is_kept_separate_from_target_input() -> None:
+def test_tag_detection_stays_in_process_without_standalone_nodes() -> None:
     module = _load_launch_module("person_follow.launch.py")
     nodes = _launch_nodes(module.generate_launch_description())
     executables = [node.__dict__["_Node__node_executable"] for node in nodes]
@@ -360,17 +379,115 @@ def test_person_follow_launch_publishes_debug_image_for_rqt() -> None:
 
     assert parameters["image_topic"] == "/phone/camera/back/image"
     assert parameters["annotated_topic"] == "/person_follow/annotated"
-    assert parameters["detections_topic"] == "/apriltag/detections"
     assert parameters["tag_family"] == "tag36h11"
     assert parameters["target_tag_id"] == 0
+    assert parameters["tag_roi_upscale"] == 4.0
+    assert "detections_topic" not in parameters
+    assert "/apriltag/detections" not in (
+        PACKAGE_DIR / "config" / "person_follow.yaml"
+    ).read_text()
 
 
-def test_person_follow_detector_preserves_small_tags_in_camera_frames() -> None:
+def test_person_follow_detector_uses_tag_roi() -> None:
     config = yaml.safe_load((PACKAGE_DIR / "config" / "person_follow.yaml").read_text())
     parameters = config["yolo_target_node"]["ros__parameters"]
+    assert parameters["tag_family"] == "tag36h11"
+    assert parameters["target_tag_id"] == 0
     assert parameters["tag_roi_upscale"] == 4.0
     assert parameters["lost_timeout_s"] == 2.0
     assert parameters["ambiguity_iou"] == 0.3
+    assert "annotation_tag_max_skew_s" not in parameters
+    for key in parameters:
+        assert not key.startswith("scarf_"), key
+
+
+def test_person_follow_band_identity_defaults_with_tag_rollback() -> None:
+    config = yaml.safe_load((PACKAGE_DIR / "config" / "person_follow.yaml").read_text())
+    parameters = config["yolo_target_node"]["ros__parameters"]
+
+    assert parameters["identity_mode"] == "apriltag"
+    assert parameters["band_leg_roi_fraction"] == 0.5
+    assert parameters["band_confirm_frames"] == 3
+    assert parameters["band_min_area_px"] == 100.0
+    assert parameters["band_max_color_ratio"] == 0.4
+    assert parameters["band_min_sep_ratio"] == 0.25
+    assert parameters["band_max_dx_ratio"] == 0.3
+    assert parameters["band_red_hue_low_a"] == 0
+    assert parameters["band_red_hue_high_a"] == 10
+    assert parameters["band_red_hue_low_b"] == 170
+    assert parameters["band_red_hue_high_b"] == 179
+    assert parameters["band_red_sat_min"] == 70
+    assert parameters["band_red_val_min"] == 50
+    assert parameters["band_blue_hue_low"] == 90
+    assert parameters["band_blue_hue_high"] == 130
+    assert parameters["band_blue_sat_min"] == 70
+    assert parameters["band_blue_val_min"] == 50
+
+    assert parameters["tag_family"] == "tag36h11"
+    assert parameters["target_tag_id"] == 0
+    assert parameters["tag_roi_upscale"] == 4.0
+    assert parameters["lost_timeout_s"] == 2.0
+
+    zone = config["zone_guard"]["ros__parameters"]
+    assert zone["clicked_point_topic"] == "/clicked_point"
+    assert zone["confirm_topic"] == "/phone/speech_text"
+    assert zone["zone_click_points"] == 4
+    assert zone["leaving_verify_s"] == 2.0
+    assert zone["guide_max_vel_x"] == 0.25
+
+
+def test_person_follow_launch_exposes_identity_mode_to_yolo_node() -> None:
+    # Given the user-facing person-follow launch description.
+    from launch.actions import DeclareLaunchArgument
+
+    module = _load_launch_module("person_follow.launch.py")
+
+    # When the launch description is constructed without starting any nodes.
+    description = module.generate_launch_description()
+
+    # Then identity_mode is declared defaulting to apriltag (apriltag rollback).
+    decls = [e for e in description.entities if isinstance(e, DeclareLaunchArgument)]
+    by_name = {d.__dict__["_DeclareLaunchArgument__name"]: d for d in decls}
+    assert "identity_mode" in by_name, "missing DeclareLaunchArgument(identity_mode)"
+    default = by_name["identity_mode"].__dict__["_DeclareLaunchArgument__default_value"]
+    default_text = "".join(getattr(s, "text", "") for s in default)
+    assert default_text == "apriltag"
+
+    # And the yolo node receives it as a parameter override.
+    yolo = _find_node(
+        _launch_nodes(description),
+        "robot_autonomous_yolo_slam_nav2",
+        "yolo_target_node.py",
+        "person_follow.launch.py",
+    )
+    found = False
+    for group in yolo.__dict__["_Node__parameters"]:
+        if not isinstance(group, dict):
+            continue
+        for key, value in group.items():
+            keys = key if isinstance(key, (list, tuple)) else (key,)
+            key_text = "".join(getattr(s, "text", "") for s in keys)
+            if key_text != "identity_mode":
+                continue
+            values = value if isinstance(value, (list, tuple)) else (value,)
+            for sub in values:
+                var = getattr(sub, "variable_name", None)
+                if var is None:
+                    continue
+                var_names = var if isinstance(var, (list, tuple)) else (var,)
+                var_text = "".join(getattr(s, "text", "") for s in var_names)
+                if var_text == "identity_mode":
+                    found = True
+    assert found, "yolo_target_node missing identity_mode LaunchConfiguration override"
+
+    # And the launch source wires the documented rollback argument.
+    launch_source = (PACKAGE_DIR / "launch" / "person_follow.launch.py").read_text()
+    assert '"identity_mode"' in launch_source
+    assert "color_bands" in launch_source
+    assert 'LaunchConfiguration("identity_mode")' in launch_source
+    # Existing entrypoints stay intact.
+    assert '"use_slam"' in launch_source
+    assert '"calibration_file"' in launch_source
 
 
 def test_follow_path_contains_no_home_behavior() -> None:

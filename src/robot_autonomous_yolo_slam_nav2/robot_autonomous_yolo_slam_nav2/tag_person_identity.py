@@ -64,6 +64,13 @@ class TagPersonIdentity:
                 if self._target_id is not None:
                     self._missing_frames += 1
                     long_gap = stamp_ns - self._last_seen_ns >= self._lost_timeout_ns
+                    if long_gap and target is None:
+                        self._target_id = None
+                        self._last_bbox = None
+                        self._missing_frames = 0
+                        self._awaiting_confirmation = True
+                        self._state = TargetState.LOST
+                        return self._result(observations, None)
                     self._awaiting_confirmation = (
                         self._awaiting_confirmation or target is not None
                         or self._missing_frames >= self._lost_frames or long_gap

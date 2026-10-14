@@ -1,18 +1,16 @@
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 
 import cv2
 import numpy as np
-from apriltag_msgs.msg import AprilTagDetectionArray
 from cv_bridge import CvBridge
 from numpy.typing import NDArray
 from rclpy.node import Node
 from sensor_msgs.msg import Image
 from std_msgs.msg import Header
 
-from .target_state import TargetSelectionResult
+from .target_state import TargetSelectionResult, TrackId
 
 
 TrackedPerson = tuple[int, tuple[float, float, float, float], float]
@@ -25,32 +23,22 @@ class TagOverlay:
     corners: tuple[tuple[float, float], ...]
 
 
-def fresh_tags(
-    detections: AprilTagDetectionArray,
-    image_header: Header,
-    max_skew_s: float,
-) -> tuple[TagOverlay, ...]:
-    image_ns = image_header.stamp.sec * 1_000_000_000 + image_header.stamp.nanosec
-    tag_ns = detections.header.stamp.sec * 1_000_000_000 + detections.header.stamp.nanosec
-    if (
-        image_ns <= 0 or tag_ns <= 0
-        or detections.header.frame_id != image_header.frame_id
-        or abs(image_ns - tag_ns) > max_skew_s * 1_000_000_000
-    ):
-        return ()
-    return tuple(
-        TagOverlay(tag.family, int(tag.id), tuple((float(p.x), float(p.y)) for p in tag.corners))
-        for tag in detections.detections
-        if len(tag.corners) == 4
-        and all(math.isfinite(p.x) and math.isfinite(p.y) for p in tag.corners)
-    )
+@dataclass(frozen=True, slots=True)
+class BandOverlay:
+    """One accepted red-above-blue pair in source-image pixels."""
+
+    track_id: TrackId
+    red_center: tuple[float, float]
+    blue_center: tuple[float, float]
 
 
 def annotate_people(
     frame: NDArray[np.uint8],
     tracks: list[TrackedPerson],
     selection: TargetSelectionResult,
-    tags: tuple[TagOverlay, ...],
+    tags: tuple[TagOverlay, ...] = (),
+    bands: tuple[BandOverlay, ...] = (),
+    reid_state: str | None = None,
 ) -> NDArray[np.uint8]:
     annotated = frame.copy()
     height, width = annotated.shape[:2]
@@ -68,30 +56,32 @@ def annotate_people(
         cv2.polylines(annotated, [points], True, (0, 255, 255), 2)
         anchor = (max(0, int(points[0, 0])), max(44, int(points[0, 1]) - 5))
         cv2.putText(annotated, f"{tag.family} ID {tag.tag_id}", anchor, cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
+    for band in bands:
+        for center, color in ((band.red_center, (0, 0, 255)), (band.blue_center, (255, 0, 0))):
+            left = max(0, min(width - 1, int(center[0]) - 6))
+            top = max(0, min(height - 1, int(center[1]) - 6))
+            right = max(0, min(width - 1, int(center[0]) + 6))
+            bottom = max(0, min(height - 1, int(center[1]) + 6))
+            cv2.rectangle(annotated, (left, top), (right, bottom), color, 2)
     cv2.rectangle(annotated, (0, 0), (width - 1, 32), (0, 0, 0), -1)
     cv2.putText(
         annotated, f"state={selection.state.value} target={target_id if target_id is not None else 'none'}",
         (5, 13), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1,
     )
     tag_state = "CONFIRM" if tags else ("SKIP" if target_id is not None else "SEARCH")
-    cv2.putText(annotated, f"people={len(tracks)} tags={len(tags)} tag={tag_state}", (5, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+    band_state = "CONFIRM" if bands else ("SKIP" if target_id is not None else "SEARCH")
+    status_line = f"people={len(tracks)} tags={len(tags)} tag={tag_state} bands={band_state}"
+    if reid_state is not None:
+        status_line = f"{status_line} reid={reid_state}"
+    cv2.putText(annotated, status_line, (5, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
     return annotated
 
 
 class PersonAnnotationPublisher:
     def __init__(self, node: Node) -> None:
         node.declare_parameter("annotated_topic", "/person_follow/annotated")
-        node.declare_parameter("annotation_tag_max_skew_s", 0.1)
-        self._max_skew_s = float(str(node.get_parameter("annotation_tag_max_skew_s").value))
         self._bridge = CvBridge()
-        self._tags = AprilTagDetectionArray()
         self._publisher = node.create_publisher(Image, str(node.get_parameter("annotated_topic").value), 5)
-        self._subscription = node.create_subscription(
-            AprilTagDetectionArray, str(node.get_parameter("detections_topic").value), self._tag_callback, 5,
-        )
-
-    def _tag_callback(self, message: AprilTagDetectionArray) -> None:
-        self._tags = message
 
     def publish(
         self,
@@ -100,9 +90,13 @@ class PersonAnnotationPublisher:
         selection: TargetSelectionResult,
         header: Header,
         tags: tuple[TagOverlay, ...] | None = None,
+        bands: tuple[BandOverlay, ...] | None = None,
+        reid_state: str | None = None,
     ) -> None:
         if tags is None:
-            tags = fresh_tags(self._tags, header, self._max_skew_s)
-        output = self._bridge.cv2_to_imgmsg(annotate_people(frame, tracks, selection, tags), encoding="bgr8")
+            tags = ()
+        if bands is None:
+            bands = ()
+        output = self._bridge.cv2_to_imgmsg(annotate_people(frame, tracks, selection, tags, bands, reid_state), encoding="bgr8")
         output.header = header
         self._publisher.publish(output)

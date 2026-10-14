@@ -35,7 +35,7 @@ install(FILES calibration/board-a4-ultrawide.pdf calibration/board-a4-ultrawide-
   DESTINATION share/${PROJECT_NAME}/calibration
 )
 
-install(FILES README.md REFERENCES.md
+install(FILES README.md
   DESTINATION share/${PROJECT_NAME}
 )
 
@@ -47,9 +47,9 @@ install(FILES resource/${PROJECT_NAME}
 )
 
 install(PROGRAMS scripts/odom_tf_bridge.py scripts/cmd_vel_bridge.py scripts/motor_odom.py scripts/awsd_teleop.py scripts/drive_circle.py scripts/imu_remap.py scripts/map_room.sh
-  scripts/apriltag_target_node.py scripts/metric_target_node.py scripts/nav2_person_follow.py
+  scripts/metric_target_node.py scripts/nav2_person_follow.py
   scripts/zone_guard_node.py
-  scripts/phone_camera_info.py scripts/camera_info_publisher.py scripts/apriltag_debug_image.py
+  scripts/phone_camera_info.py scripts/camera_info_publisher.py
   scripts/yolo_target_node.py scripts/safety_gate_node.py
   DESTINATION lib/${PROJECT_NAME}
 )

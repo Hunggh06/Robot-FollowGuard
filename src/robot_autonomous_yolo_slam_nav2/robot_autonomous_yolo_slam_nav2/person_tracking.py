@@ -18,9 +18,17 @@ import math
 import numpy as np
 from scipy.optimize import linear_sum_assignment
 
-from .tag_person_identity import bbox_iou
-
 _LARGE_COST = 1e9
+
+
+def bbox_iou(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> float:
+    left, top = max(a[0], b[0]), max(a[1], b[1])
+    right, bottom = min(a[2], b[2]), min(a[3], b[3])
+    intersection = max(0.0, right - left) * max(0.0, bottom - top)
+    area_a = max(0.0, a[2] - a[0]) * max(0.0, a[3] - a[1])
+    area_b = max(0.0, b[2] - b[0]) * max(0.0, b[3] - b[1])
+    union = area_a + area_b - intersection
+    return intersection / union if union > 0.0 else 0.0
 
 
 class _KalmanBox:

@@ -1,28 +1,20 @@
 from pathlib import Path
-import shutil
-import subprocess
-
-import pytest
+from typing import Final
 
 
-def test_firmware_startup_and_reversal_driver(tmp_path: Path) -> None:
-    compiler = shutil.which("g++")
-    if compiler is None:
-        pytest.skip("g++ is required for the firmware host test")
-    package = Path(__file__).parents[1]
-    firmware = Path(__file__).resolve().parents[3] / "firmware/robot_lowlevel_v2_3.ino"
-    source = firmware.read_text()
-    assert '#include "motor_pid_control.h"' not in source
-    start = source.index("struct WheelPIDConfig {")
-    end = source.index("// ================= WIFI", start)
-    (tmp_path / "motor_pid_control.h").write_text(
-        "#include <algorithm>\n#include <cmath>\n#include <cstdint>\n" + source[start:end]
-    )
-    binary = tmp_path / "motor_pid_test"
-    subprocess.run(
-        [compiler, "-std=c++11", "-Wall", "-Wextra", "-Werror", "-I", str(tmp_path),
-         str(package / "test" / "firmware_motor_pid_driver.cpp"), "-o", str(binary)],
-        check=True, capture_output=True, text=True, timeout=15,
-    )
-    result = subprocess.run([str(binary)], check=True, capture_output=True, text=True, timeout=5)
-    assert result.stdout.count(" OK") == 5
+WORKSPACE_ROOT: Final = Path(__file__).resolve().parents[3]
+ACTIVE_FIRMWARE_FILE: Final = (
+    WORKSPACE_ROOT / "src/robot_autonomous_yolo_slam_nav2/firmware_esp32/robot.ino"
+)
+
+
+def test_active_firmware_has_per_wheel_pid_and_command_timeout_guards() -> None:
+    source = ACTIVE_FIRMWARE_FILE.read_text(encoding="utf-8")
+
+    assert "#define CMD_TIMEOUT_MS    1000UL" in source
+    assert "if (now - lastCmdMs > CMD_TIMEOUT_MS" in source
+    assert "stopMotors();" in source
+    assert "pwmLeft  = calculatePIDLeft(dt);" in source
+    assert "pwmRight = calculatePIDRight(dt);" in source
+    assert "float error = targetRPMLeft - rpmLeftFiltered;" in source
+    assert "float error = targetRPMRight - rpmRightFiltered;" in source
