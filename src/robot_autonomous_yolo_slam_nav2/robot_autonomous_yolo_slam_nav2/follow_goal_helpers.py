@@ -7,8 +7,6 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Literal
 
-from typing_extensions import assert_never
-
 Point2D = tuple[float, float]
 Point3D = tuple[float, float, float]
 
@@ -51,6 +49,9 @@ class FollowConfig:
     corridor_half_width_m: float = 0.22
     goal_update_distance_m: float = 0.1
     base_frame: str = "base_link"
+    face_target_in_standoff: bool = True
+    face_update_yaw_rad: float = 0.35
+    face_update_period_s: float = 0.5
 
 
 @dataclass(frozen=True, slots=True)
@@ -169,17 +170,45 @@ def decide_follow_goal(
     )
 
 
-def decision_requires_cancel(decision: FollowDecision) -> bool:
-    """Return whether a runtime must cancel its active Nav2 goal."""
-    match decision.status:
-        case FollowDecisionStatus.GOAL:
-            return decision.cancel_active_goal
-        case FollowDecisionStatus.HOLD:
-            return decision.cancel_active_goal
-        case FollowDecisionStatus.CANCEL:
-            return True
-        case unreachable:
-            assert_never(unreachable)
+def decide_face_goal(
+    target: TargetGeometry,
+    config: FollowConfig,
+    last_face_yaw_rad: float | None,
+    since_last_face_send_s: float | None,
+) -> FollowDecision:
+    """Face an in-standoff target in place with a same-position Nav2 goal.
+
+    Returns a GOAL at the robot's current base-link origin (0, 0) whose yaw
+    is the target bearing, or a quiet HOLD (never a cancel) when facing is
+    disabled, the bearing is unusable, the bearing has not moved past
+    `face_update_yaw_rad` since the last face goal, or fewer than
+    `face_update_period_s` have elapsed since that goal.
+    """
+    if not config.face_target_in_standoff:
+        return _hold("face_disabled", False)
+    if not math.isfinite(target.bearing_rad):
+        return _hold("face_no_bearing", False)
+    if (
+        since_last_face_send_s is not None
+        and since_last_face_send_s < config.face_update_period_s
+    ):
+        return _hold("face_update_below_interval", False)
+    if last_face_yaw_rad is not None:
+        yaw_delta = abs(
+            math.atan2(
+                math.sin(target.bearing_rad - last_face_yaw_rad),
+                math.cos(target.bearing_rad - last_face_yaw_rad),
+            )
+        )
+        if yaw_delta < config.face_update_yaw_rad:
+            return _hold("face_update_below_threshold", False)
+    return FollowDecision(
+        status=FollowDecisionStatus.GOAL,
+        goal_base_link=(0.0, 0.0),
+        goal_yaw_rad=target.bearing_rad,
+        cancel_active_goal=False,
+        reason="face_target_in_place",
+    )
 
 
 CloseAction = Literal["cancel_now", "hold", "follow"]

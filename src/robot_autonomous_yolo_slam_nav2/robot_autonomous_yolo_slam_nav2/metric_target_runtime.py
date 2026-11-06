@@ -21,10 +21,11 @@ from .metric_target_cycle import run_cycle
 from .metric_target_helpers import LaserToBaseTransform
 from .metric_target_ros import transform_values
 from .position_cache import PositionCache
+from .target_kalman_filter import KalmanFusionConfig, TargetKalmanFilter
 
 
 class MetricTargetRuntime(Node):
-    """Associate locked visual targets with LiDAR or held geometry."""
+    """Associate locked visual targets with Camera + LiDAR Kalman fusion or held geometry."""
 
     def __init__(self) -> None:
         super().__init__("metric_target_node")
@@ -36,6 +37,49 @@ class MetricTargetRuntime(Node):
         self._cache = PositionCache(
             hold_timeout_s=float(str(self.get_parameter("hold_timeout_s").value)),
             decay_per_s=float(str(self.get_parameter("hold_decay_per_s").value)),
+        )
+        self._kalman = TargetKalmanFilter(
+            KalmanFusionConfig(
+                process_pos_noise=float(
+                    str(self.get_parameter("kf_process_pos_noise").value)
+                ),
+                process_vel_noise=float(
+                    str(self.get_parameter("kf_process_vel_noise").value)
+                ),
+                velocity_damping=float(
+                    str(self.get_parameter("kf_velocity_damping").value)
+                ),
+                max_speed_m_s=float(
+                    str(self.get_parameter("kf_max_speed_m_s").value)
+                ),
+                max_coast_s=float(
+                    str(self.get_parameter("kf_max_coast_s").value)
+                ),
+                lidar_coast_s=float(
+                    str(self.get_parameter("kf_lidar_coast_s").value)
+                ),
+                camera_bearing_std_rad=float(
+                    str(self.get_parameter("kf_camera_bearing_std_rad").value)
+                ),
+                camera_range_rel_std=float(
+                    str(self.get_parameter("kf_camera_range_rel_std").value)
+                ),
+                expected_person_width_m=float(
+                    str(self.get_parameter("kf_expected_person_width_m").value)
+                ),
+                expected_person_height_m=float(
+                    str(self.get_parameter("kf_expected_person_height_m").value)
+                ),
+                bearing_window_half_angle_rad=float(
+                    str(self.get_parameter("kf_bearing_window_half_angle_rad").value)
+                ),
+                mahalanobis_gate_sq=float(
+                    str(self.get_parameter("kf_mahalanobis_gate_sq").value)
+                ),
+                allow_camera_only=bool(
+                    self.get_parameter("kf_allow_camera_only").value
+                ),
+            )
         )
         self._tf_buffer = Buffer()
         self._tf_listener = TransformListener(self._tf_buffer, self)
@@ -59,7 +103,7 @@ class MetricTargetRuntime(Node):
             PersonObservation,
             str(self.get_parameter("observations_topic").value),
             self._observation_callback,
-            5,
+            20,
         )
         self.create_subscription(
             LaserScan,
@@ -98,14 +142,39 @@ class MetricTargetRuntime(Node):
         self.declare_parameter("hold_timeout_s", 5.0)
         self.declare_parameter("hold_decay_per_s", 0.05)
         self.declare_parameter("publish_period_s", 0.1)
+        self.declare_parameter("use_kalman_fusion", True)
+        self.declare_parameter("kf_process_pos_noise", 0.15)
+        self.declare_parameter("kf_process_vel_noise", 0.60)
+        self.declare_parameter("kf_velocity_damping", 0.85)
+        self.declare_parameter("kf_max_speed_m_s", 2.2)
+        self.declare_parameter("kf_max_coast_s", 1.2)
+        self.declare_parameter("kf_lidar_coast_s", 1.5)
+        self.declare_parameter("kf_camera_bearing_std_rad", 0.035)
+        self.declare_parameter("kf_camera_range_rel_std", 0.25)
+        self.declare_parameter("kf_expected_person_width_m", 0.45)
+        self.declare_parameter("kf_expected_person_height_m", 1.68)
+        self.declare_parameter("kf_bearing_window_half_angle_rad", 0.22)
+        self.declare_parameter("kf_mahalanobis_gate_sq", 16.0)
+        self.declare_parameter("kf_allow_camera_only", True)
 
     def _target_callback(self, message: PersonTarget) -> None:
         if self._target is not None and message.track_id != self._target.track_id:
             self._cache.reset()
+            self._kalman.reset()
         self._target = message
 
     def _observation_callback(self, message: PersonObservation) -> None:
         self._observations[message.track_id] = message
+        if len(self._observations) > 64:
+            now_ns = self.get_clock().now().nanoseconds
+            max_age_ns = int(float(str(self.get_parameter("max_data_age_s").value)) * 2_000_000_000)
+            stale_keys = [
+                tid
+                for tid, obs in self._observations.items()
+                if now_ns - (int(obs.header.stamp.sec) * 1_000_000_000 + int(obs.header.stamp.nanosec)) > max_age_ns
+            ]
+            for tid in stale_keys:
+                self._observations.pop(tid, None)
 
     def _scan_callback(self, message: LaserScan) -> None:
         self._scan = message

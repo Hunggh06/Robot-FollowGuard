@@ -10,10 +10,18 @@ from rclpy.node import Node
 from sensor_msgs.msg import Image
 from std_msgs.msg import Header
 
-from .target_state import TargetSelectionResult, TrackId
+from .hand_raise_logic import PoseDetection
+from .person_tracking import bbox_iou
+from .target_state import TargetSelectionResult
 
 
 TrackedPerson = tuple[int, tuple[float, float, float, float], float]
+
+_SKELETON = (
+    (5, 7), (7, 9), (6, 8), (8, 10), (5, 6),
+    (5, 11), (6, 12), (11, 12), (11, 13), (13, 15), (12, 14), (14, 16),
+    (0, 1), (0, 2), (1, 3), (2, 4),
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,13 +31,21 @@ class TagOverlay:
     corners: tuple[tuple[float, float], ...]
 
 
-@dataclass(frozen=True, slots=True)
-class BandOverlay:
-    """One accepted red-above-blue pair in source-image pixels."""
-
-    track_id: TrackId
-    red_center: tuple[float, float]
-    blue_center: tuple[float, float]
+def _draw_pose(
+    frame: NDArray[np.uint8], pose: PoseDetection, color: tuple[int, int, int],
+) -> None:
+    height, width = frame.shape[:2]
+    points = [
+        (int(round(k.x)), int(round(k.y)))
+        if k.visible(0.3) and 0 <= k.x < width and 0 <= k.y < height else None
+        for k in pose.keypoints
+    ]
+    for first, second in _SKELETON:
+        if points[first] is not None and points[second] is not None:
+            cv2.line(frame, points[first], points[second], color, 2)
+    for point in points:
+        if point is not None:
+            cv2.circle(frame, point, 3, color, -1)
 
 
 def annotate_people(
@@ -37,8 +53,8 @@ def annotate_people(
     tracks: list[TrackedPerson],
     selection: TargetSelectionResult,
     tags: tuple[TagOverlay, ...] = (),
-    bands: tuple[BandOverlay, ...] = (),
-    reid_state: str | None = None,
+    poses: tuple[PoseDetection, ...] = (),
+    raised: bool = False,
 ) -> NDArray[np.uint8]:
     annotated = frame.copy()
     height, width = annotated.shape[:2]
@@ -56,23 +72,26 @@ def annotate_people(
         cv2.polylines(annotated, [points], True, (0, 255, 255), 2)
         anchor = (max(0, int(points[0, 0])), max(44, int(points[0, 1]) - 5))
         cv2.putText(annotated, f"{tag.family} ID {tag.tag_id}", anchor, cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
-    for band in bands:
-        for center, color in ((band.red_center, (0, 0, 255)), (band.blue_center, (255, 0, 0))):
-            left = max(0, min(width - 1, int(center[0]) - 6))
-            top = max(0, min(height - 1, int(center[1]) - 6))
-            right = max(0, min(width - 1, int(center[0]) + 6))
-            bottom = max(0, min(height - 1, int(center[1]) + 6))
-            cv2.rectangle(annotated, (left, top), (right, bottom), color, 2)
+    target_box = None if selection.target_observation is None else selection.target_observation.bbox
+    best_index, best_iou = -1, 0.0
+    if target_box is not None:
+        for index, pose in enumerate(poses):
+            overlap = bbox_iou(pose.bbox, target_box)
+            if overlap > best_iou:
+                best_index, best_iou = index, overlap
+    for index, pose in enumerate(poses):
+        if index == best_index and best_iou >= 0.3:
+            _draw_pose(annotated, pose, (0, 255, 0) if raised else (0, 0, 255))
+        else:
+            _draw_pose(annotated, pose, (160, 160, 160))
     cv2.rectangle(annotated, (0, 0), (width - 1, 32), (0, 0, 0), -1)
     cv2.putText(
         annotated, f"state={selection.state.value} target={target_id if target_id is not None else 'none'}",
         (5, 13), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1,
     )
-    tag_state = "CONFIRM" if tags else ("SKIP" if target_id is not None else "SEARCH")
-    band_state = "CONFIRM" if bands else ("SKIP" if target_id is not None else "SEARCH")
-    status_line = f"people={len(tracks)} tags={len(tags)} tag={tag_state} bands={band_state}"
-    if reid_state is not None:
-        status_line = f"{status_line} reid={reid_state}"
+    tag_state = "CONFIRM" if (tags and target_id is not None) else ("SKIP" if target_id is not None else "SEARCH")
+    pose_state = "RAISED" if raised else ("down" if poses else "off")
+    status_line = f"people={len(tracks)} tags={len(tags)} tag={tag_state} pose={pose_state}"
     cv2.putText(annotated, status_line, (5, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
     return annotated
 
@@ -90,13 +109,12 @@ class PersonAnnotationPublisher:
         selection: TargetSelectionResult,
         header: Header,
         tags: tuple[TagOverlay, ...] | None = None,
-        bands: tuple[BandOverlay, ...] | None = None,
-        reid_state: str | None = None,
+        poses: tuple[PoseDetection, ...] = (),
+        raised: bool = False,
     ) -> None:
         if tags is None:
             tags = ()
-        if bands is None:
-            bands = ()
-        output = self._bridge.cv2_to_imgmsg(annotate_people(frame, tracks, selection, tags, bands, reid_state), encoding="bgr8")
+        output = self._bridge.cv2_to_imgmsg(
+            annotate_people(frame, tracks, selection, tags, poses, raised), encoding="bgr8")
         output.header = header
         self._publisher.publish(output)

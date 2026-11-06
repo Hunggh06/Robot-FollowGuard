@@ -5,7 +5,6 @@ __path__ = extend_path(__path__, __name__)
 from .target_state import (
     BoundingBox,
     TargetSelectionResult,
-    TargetSelector,
     TargetState,
     TrackId,
     TrackObservation,
@@ -29,7 +28,6 @@ from .metric_association import (
 __all__ = [
     "BoundingBox",
     "TargetSelectionResult",
-    "TargetSelector",
     "TargetState",
     "TrackId",
     "TrackObservation",

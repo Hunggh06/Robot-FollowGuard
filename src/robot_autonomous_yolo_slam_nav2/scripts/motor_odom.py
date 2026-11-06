@@ -67,7 +67,7 @@ class MotorOdom(Node):
         th_mid = self.th + d_th * 0.5
         self.x += d_c * math.cos(th_mid)
         self.y += d_c * math.sin(th_mid)
-        self.th += d_th
+        self.th = math.atan2(math.sin(self.th + d_th), math.cos(self.th + d_th))
 
     def _publish(self):
         if self.prev_enc is None:

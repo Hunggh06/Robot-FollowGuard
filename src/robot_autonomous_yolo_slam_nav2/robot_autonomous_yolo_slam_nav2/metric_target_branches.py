@@ -1,15 +1,16 @@
-"""Pure LiDAR position decisions for the metric target runtime.
+"""Pure LiDAR and Camera+LiDAR Kalman Filter decisions for the metric target runtime.
 
-No ROS I/O here: the runtime builds the typed inputs (selection and LiDAR
-points) and publishes the returned decision. People obstacles come only from
-projected non-target observations, never from raw scan points: the target's
-own legs and walls must not appear in the person cloud and freeze the
-follower. There is no camera range estimation: only LiDAR geometry.
+No ROS I/O here: the runtime builds the typed inputs (selection, LiDAR
+points, and optional Camera/Kalman inputs) and publishes the returned
+decision. People obstacles come only from projected non-target observations,
+never from raw scan points: the target's own legs and walls must not appear
+in the person cloud and freeze the follower.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from .metric_association import (
     BaseToCameraTransform,
@@ -20,9 +21,17 @@ from .metric_association import (
     Point3D,
     associate_metric_observations,
 )
-from .metric_target_scan_helpers import is_fresh, timestamps_within_skew
+from .metric_target_scan_helpers import (
+    LaserScanFields,
+    LaserToBaseTransform,
+    is_fresh,
+    timestamps_within_skew,
+)
 from .metric_target_selection_helpers import metric_obstacles_to_xyz
 from .target_state import TargetSelectionResult
+
+if TYPE_CHECKING:
+    from .target_kalman_filter import CameraFusionInputs, TargetKalmanFilter
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,6 +44,8 @@ class LidarInputs:
     image_size: ImageSize
     stamp_ns: int
     position_confidence: float
+    scan: LaserScanFields | None = None
+    laser_transform: LaserToBaseTransform | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,12 +94,22 @@ def lidar_target_and_obstacles(
 def decide_branch(
     selection: TargetSelectionResult,
     lidar: LidarInputs | None,
+    *,
+    kalman_filter: TargetKalmanFilter | None = None,
+    camera: CameraFusionInputs | None = None,
 ) -> BranchDecision:
-    """LiDAR geometry when the target box holds fresh scan points.
+    """Decide target metric geometry from Kalman Filter (Camera + LiDAR) or raw LiDAR.
 
+    When ``kalman_filter`` is provided, fuses LiDAR (bbox projection or
+    bearing-window fallback) and Camera (azimuth ray + monocular/footpoint
+    depth) in a 4-state constant-velocity Kalman Filter. When called with
+    only ``(selection, lidar)``, preserves the pure LiDAR bbox contract.
     Obstacles always come from projected non-target observations, never
-    from raw scan points. Anything else reports no geometry.
+    from raw scan points.
     """
+    if kalman_filter is not None:
+        return kalman_filter.fuse(selection, lidar, camera)
+
     obstacles: tuple[Point3D, ...] = ()
     observation: MetricPersonObservation | None = None
     if lidar is not None:

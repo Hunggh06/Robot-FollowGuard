@@ -3,8 +3,9 @@ from pathlib import Path
 from types import ModuleType
 
 import yaml
-from launch import LaunchDescription
-from launch.actions import IncludeLaunchDescription
+from launch import LaunchContext, LaunchDescription
+from launch.actions import IncludeLaunchDescription, SetLaunchConfiguration
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 
@@ -249,7 +250,7 @@ def test_person_follow_launch_wires_nodes_and_conditional_slam() -> None:
         assert len(node.__dict__["_Node__parameters"]) >= 1
     assert (PACKAGE_DIR / "launch" / "person_follow.launch.py").read_text().count(
         "parameters=[config_path]",
-    ) == 3
+    ) == 4
 
     # And SLAM is included behind the declared use_slam condition.
     includes = [entity for entity in description.entities if isinstance(entity, IncludeLaunchDescription)]
@@ -258,7 +259,26 @@ def test_person_follow_launch_wires_nodes_and_conditional_slam() -> None:
     launch_source = (PACKAGE_DIR / "launch" / "person_follow.launch.py").read_text()
     assert 'DeclareLaunchArgument(\n                "use_slam"' in launch_source
     assert "IfCondition(use_slam)" in launch_source
-    assert '"start_person_follow": "false"' in launch_source
+    assert '"start_perception_nodes": "false"' in launch_source
+
+
+def test_person_follow_include_does_not_override_its_follow_gate() -> None:
+    module = _load_launch_module("person_follow.launch.py")
+    description = module.generate_launch_description()
+    includes = [
+        entity
+        for entity in description.entities
+        if isinstance(entity, IncludeLaunchDescription)
+    ]
+    assert len(includes) == 1
+
+    context = LaunchContext()
+    context.launch_configurations["start_person_follow"] = "true"
+    for action in includes[0].execute(context):
+        if isinstance(action, SetLaunchConfiguration):
+            action.execute(context)
+
+    assert LaunchConfiguration("start_person_follow").perform(context) == "true"
 
 
 def test_person_follow_launch_gates_calibrated_camera_info_publisher() -> None:
@@ -318,8 +338,8 @@ def test_person_follow_launch_exposes_tag_contract_without_reid_or_home() -> Non
     assert "yolo_target_node:" in config_source
     assert "target_topic: /yolo_target_node/target" in config_source
     assert (
-        '"start_person_follow": "false"' in launch_source
-        or "'start_person_follow': 'false'" in launch_source
+        '"start_perception_nodes": "false"' in launch_source
+        or "'start_perception_nodes': 'false'" in launch_source
     )
     assert 'camera_frame: phone_camera_back' in config_source
     node_source = (PACKAGE_DIR / "robot_autonomous_yolo_slam_nav2" / "yolo_target_node.py").read_text()
@@ -342,7 +362,8 @@ def test_zone_guard_launch_and_zone_params() -> None:
     parameters = config["zone_guard"]["ros__parameters"]
 
     assert parameters["clicked_point_topic"] == "/clicked_point"
-    assert parameters["confirm_topic"] == "/phone/speech_text"
+    assert parameters["hand_raise_topic"] == "/person_follow/hand_raise"
+    assert parameters["confirm_request_topic"] == "/person_follow/confirm_requested"
     assert parameters["say_topic"] == "/phone/speaker/say"
     assert parameters["guide_active_topic"] == "/person_follow/guide_active"
     assert parameters["zone_click_points"] == 4
@@ -350,7 +371,13 @@ def test_zone_guard_launch_and_zone_params() -> None:
     assert parameters["ask_delay_s"] == 5.0
     assert parameters["repeat_s"] == 15.0
     assert parameters["guide_max_vel_x"] == 0.25
-    assert parameters["confirm_ignore_after_say_s"] == 3.0
+    assert parameters["hand_raise_hold_s"] == 1.0
+    assert parameters["hand_raise_max_gap_s"] == 0.5
+    assert "confirm_topic" not in parameters
+    perception = config["yolo_target_node"]["ros__parameters"]
+    assert perception["hand_raise_topic"] == parameters["hand_raise_topic"]
+    assert perception["confirm_request_topic"] == parameters["confirm_request_topic"]
+    assert perception["hand_raise_hz"] == 5.0
     assert parameters["search_max_spin_revolutions"] == 2.0
     assert config["nav2_person_follow"]["ros__parameters"]["guide_active_topic"] == "/person_follow/guide_active"
 
@@ -401,27 +428,9 @@ def test_person_follow_detector_uses_tag_roi() -> None:
         assert not key.startswith("scarf_"), key
 
 
-def test_person_follow_band_identity_defaults_with_tag_rollback() -> None:
+def test_person_follow_tag_identity_defaults() -> None:
     config = yaml.safe_load((PACKAGE_DIR / "config" / "person_follow.yaml").read_text())
     parameters = config["yolo_target_node"]["ros__parameters"]
-
-    assert parameters["identity_mode"] == "apriltag"
-    assert parameters["band_leg_roi_fraction"] == 0.5
-    assert parameters["band_confirm_frames"] == 3
-    assert parameters["band_min_area_px"] == 100.0
-    assert parameters["band_max_color_ratio"] == 0.4
-    assert parameters["band_min_sep_ratio"] == 0.25
-    assert parameters["band_max_dx_ratio"] == 0.3
-    assert parameters["band_red_hue_low_a"] == 0
-    assert parameters["band_red_hue_high_a"] == 10
-    assert parameters["band_red_hue_low_b"] == 170
-    assert parameters["band_red_hue_high_b"] == 179
-    assert parameters["band_red_sat_min"] == 70
-    assert parameters["band_red_val_min"] == 50
-    assert parameters["band_blue_hue_low"] == 90
-    assert parameters["band_blue_hue_high"] == 130
-    assert parameters["band_blue_sat_min"] == 70
-    assert parameters["band_blue_val_min"] == 50
 
     assert parameters["tag_family"] == "tag36h11"
     assert parameters["target_tag_id"] == 0
@@ -430,64 +439,10 @@ def test_person_follow_band_identity_defaults_with_tag_rollback() -> None:
 
     zone = config["zone_guard"]["ros__parameters"]
     assert zone["clicked_point_topic"] == "/clicked_point"
-    assert zone["confirm_topic"] == "/phone/speech_text"
+    assert zone["hand_raise_topic"] == "/person_follow/hand_raise"
     assert zone["zone_click_points"] == 4
     assert zone["leaving_verify_s"] == 2.0
     assert zone["guide_max_vel_x"] == 0.25
-
-
-def test_person_follow_launch_exposes_identity_mode_to_yolo_node() -> None:
-    # Given the user-facing person-follow launch description.
-    from launch.actions import DeclareLaunchArgument
-
-    module = _load_launch_module("person_follow.launch.py")
-
-    # When the launch description is constructed without starting any nodes.
-    description = module.generate_launch_description()
-
-    # Then identity_mode is declared defaulting to apriltag (apriltag rollback).
-    decls = [e for e in description.entities if isinstance(e, DeclareLaunchArgument)]
-    by_name = {d.__dict__["_DeclareLaunchArgument__name"]: d for d in decls}
-    assert "identity_mode" in by_name, "missing DeclareLaunchArgument(identity_mode)"
-    default = by_name["identity_mode"].__dict__["_DeclareLaunchArgument__default_value"]
-    default_text = "".join(getattr(s, "text", "") for s in default)
-    assert default_text == "apriltag"
-
-    # And the yolo node receives it as a parameter override.
-    yolo = _find_node(
-        _launch_nodes(description),
-        "robot_autonomous_yolo_slam_nav2",
-        "yolo_target_node.py",
-        "person_follow.launch.py",
-    )
-    found = False
-    for group in yolo.__dict__["_Node__parameters"]:
-        if not isinstance(group, dict):
-            continue
-        for key, value in group.items():
-            keys = key if isinstance(key, (list, tuple)) else (key,)
-            key_text = "".join(getattr(s, "text", "") for s in keys)
-            if key_text != "identity_mode":
-                continue
-            values = value if isinstance(value, (list, tuple)) else (value,)
-            for sub in values:
-                var = getattr(sub, "variable_name", None)
-                if var is None:
-                    continue
-                var_names = var if isinstance(var, (list, tuple)) else (var,)
-                var_text = "".join(getattr(s, "text", "") for s in var_names)
-                if var_text == "identity_mode":
-                    found = True
-    assert found, "yolo_target_node missing identity_mode LaunchConfiguration override"
-
-    # And the launch source wires the documented rollback argument.
-    launch_source = (PACKAGE_DIR / "launch" / "person_follow.launch.py").read_text()
-    assert '"identity_mode"' in launch_source
-    assert "color_bands" in launch_source
-    assert 'LaunchConfiguration("identity_mode")' in launch_source
-    # Existing entrypoints stay intact.
-    assert '"use_slam"' in launch_source
-    assert '"calibration_file"' in launch_source
 
 
 def test_follow_path_contains_no_home_behavior() -> None:
@@ -564,6 +519,28 @@ def test_motor_launches_have_single_gated_motion_path() -> None:
             node.__dict__["_Node__node_executable"] == "cmd_vel_bridge.py"
             for node in nodes
         ) == 1, filename
+
+
+def test_each_motor_launch_starts_no_stuck_guard() -> None:
+    # Given the motor-owning launch descriptions.
+    for filename in ("slam.launch.py", "slam_nav.launch.py", "navigation.launch.py"):
+        module = _load_launch_module(filename)
+
+        # When the launch description is constructed without starting any nodes.
+        nodes = _launch_nodes(module.generate_launch_description())
+
+        # Then the removed stuck latch cannot hold the wheels at zero.
+        assert sum(
+            node.__dict__["_Node__node_executable"] == "stuck_guard_node.py"
+            for node in nodes
+        ) == 0, filename
+        assert "stuck_guard_node.py" not in (
+            PACKAGE_DIR / "launch" / filename
+        ).read_text(), filename
+
+    config = yaml.safe_load((PACKAGE_DIR / "config" / "person_follow.yaml").read_text())
+    assert "stuck_guard" not in config
+    assert "stuck_active_topic" not in config["nav2_person_follow"]["ros__parameters"]
 
 
 def test_person_follow_launch_starts_neither_gate_nor_bridge() -> None:

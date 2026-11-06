@@ -21,7 +21,7 @@ from robot_autonomous_yolo_slam_nav2.metric_target_helpers import (  # noqa: E40
     parse_camera_info,
     timestamps_within_skew,
 )
-from robot_autonomous_yolo_slam_nav2.reid_target_helpers import (  # noqa: E402
+from robot_autonomous_yolo_slam_nav2.person_message_fields import (  # noqa: E402
     PersonObservationFields,
     PersonTargetFields,
 )
@@ -196,3 +196,4 @@ def test_metric_obstacles_convert_to_xyz_tuples_only() -> None:
 
     # Then the output is a stable tuple of xyz values without target metadata.
     assert points == ((1.0, 2.0, 0.0), (-1.0, 0.5, 0.2))
+

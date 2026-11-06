@@ -27,6 +27,8 @@ class OdomTfBridge(Node):
         self.last_pose = None
         self.pose = [0.0, 0.0]
         self.vel = [0.0, 0.0]
+        self.pose_cov = [0.0] * 36
+        self.twist_cov = [0.0] * 36
         self.quat = Quaternion()
         self.quat.w = 1.0
         self.declare_parameter('relay_scan', False)
@@ -67,8 +69,10 @@ class OdomTfBridge(Node):
         o.pose.pose.position.x = self.pose[0]
         o.pose.pose.position.y = self.pose[1]
         o.pose.pose.orientation = self.quat
+        o.pose.covariance = list(self.pose_cov)
         o.twist.twist.linear.x = self.vel[0]
         o.twist.twist.angular.z = self.vel[1]
+        o.twist.covariance = list(self.twist_cov)
         self.odom_pub.publish(o)
 
     def odom_cb(self, msg):
@@ -79,9 +83,11 @@ class OdomTfBridge(Node):
         p = msg.pose.pose
         self.pose[0] = p.position.x
         self.pose[1] = p.position.y
+        self.pose_cov = list(msg.pose.covariance)
         t = msg.twist.twist
         self.vel[0] = t.linear.x
         self.vel[1] = t.angular.z
+        self.twist_cov = list(msg.twist.covariance)
         self.quat = p.orientation
         self.last_pose = p
 

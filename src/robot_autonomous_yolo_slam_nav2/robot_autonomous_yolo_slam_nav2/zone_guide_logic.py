@@ -13,8 +13,8 @@ import math
 
 
 SAY_VIOLATION = "Bạn đã đi vào vùng cấm, quay đầu ngay lập tức"
-SAY_ASK_CONFIRM = "Hãy nói xác nhận để chuyển chế độ dẫn đường"
-SAY_GUIDE_CONFIRMED = "Đã xác nhận chuyển chế độ dẫn đường"
+SAY_ASK_CONFIRM = "Hãy nhấc một bàn chân lên khỏi mặt đất và giữ một giây để chuyển chế độ dẫn đường"
+SAY_GUIDE_CONFIRMED = "Đã xác nhận, đi theo tôi để quay về vùng an toàn"
 SAY_BACK_SAFE = "Bạn đã quay trở lại vùng an toàn"
 
 
@@ -98,9 +98,4 @@ def debounce_outside(
     return accum_s, accum_s >= require_s
 
 
-def confirm_match(text: str, keyword: str) -> bool:
-    """Case-insensitive substring match for the spoken confirmation."""
-    wanted = keyword.strip().lower()
-    if not wanted:
-        return False
-    return wanted in text.lower()
+

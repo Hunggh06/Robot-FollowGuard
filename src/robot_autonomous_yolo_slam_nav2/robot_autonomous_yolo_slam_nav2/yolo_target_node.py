@@ -11,7 +11,6 @@ Spec (docs/superpowers/specs/2026-10-11-apriltag-reacquisition-design.md):
 from __future__ import annotations
 
 import math
-from typing import Final
 
 import numpy as np
 from cv_bridge import CvBridge, CvBridgeError
@@ -22,20 +21,11 @@ from std_msgs.msg import Header
 from std_srvs.srv import Trigger
 
 from .target_state import TrackId, TrackObservation
-from .color_band_person_identity import ColorBandPersonIdentity
-from .person_annotation import PersonAnnotationPublisher, TagOverlay, BandOverlay
-from .person_color_bands_detector import (
-    ColorBandsConfig,
-    PersonColorBandsDetector,
-    banded_tracks,
-)
+from .person_annotation import PersonAnnotationPublisher, TagOverlay
 from .person_tag_detector import PersonTagDetector, tagged_tracks
 from .person_tracking import PersonTracker
-from .reid_branch import ReidBranch, ReidBranchConfig
+from .hand_raise_perception import HandRaisePerception
 from .tag_person_identity import TagPersonIdentity
-
-
-_ROLLBACK_MODES: Final = ("color_bands", "apriltag")
 
 
 def presence_observation_messages(observations, header, state, obs_type):
@@ -78,35 +68,9 @@ class YoloTargetNode(Node):
         self.declare_parameter("imgsz", 416)
         self.declare_parameter("conf", 0.5)
         self.declare_parameter("device", "cpu")
-        self.declare_parameter("identity_mode", "apriltag")
         self.declare_parameter("tag_family", "tag36h11")
         self.declare_parameter("target_tag_id", 0)
         self.declare_parameter("tag_roi_upscale", 4.0)
-        self.declare_parameter("band_leg_roi_fraction", 0.5)
-        self.declare_parameter("band_confirm_frames", 3)
-        self.declare_parameter("band_min_area_px", 100.0)
-        self.declare_parameter("band_max_color_ratio", 0.4)
-        self.declare_parameter("band_min_sep_ratio", 0.25)
-        self.declare_parameter("band_max_dx_ratio", 0.3)
-        self.declare_parameter("band_red_hue_low_a", 0)
-        self.declare_parameter("band_red_hue_high_a", 10)
-        self.declare_parameter("band_red_hue_low_b", 170)
-        self.declare_parameter("band_red_hue_high_b", 179)
-        self.declare_parameter("band_red_sat_min", 70)
-        self.declare_parameter("band_red_val_min", 50)
-        self.declare_parameter("band_blue_hue_low", 90)
-        self.declare_parameter("band_blue_hue_high", 130)
-        self.declare_parameter("band_blue_sat_min", 70)
-        self.declare_parameter("band_blue_val_min", 50)
-        reid_defaults = ReidBranchConfig()
-        self.declare_parameter("reid_checkpoint", reid_defaults.checkpoint_path)
-        self.declare_parameter("reid_expected_sha256", reid_defaults.expected_sha256)
-        self.declare_parameter("reid_match_threshold", reid_defaults.match_threshold)
-        self.declare_parameter("reid_match_margin", reid_defaults.match_margin)
-        self.declare_parameter("reid_match_hz", 5.0)
-        self.declare_parameter("reid_min_crop_height_px", reid_defaults.min_crop_height_px)
-        self.declare_parameter("reid_enroll_samples", reid_defaults.enroll_samples)
-        self.declare_parameter("reid_enroll_timeout_s", 3.0)
         self.declare_parameter("lost_timeout_s", 2.0)
         self.declare_parameter("ambiguity_iou", 0.3)
         self.declare_parameter("min_confidence", 0.5)
@@ -134,7 +98,7 @@ class YoloTargetNode(Node):
             self._target_type, str(self.get_parameter("target_topic").value), 5
         )
         self._obs_pub = self.create_publisher(
-            self._obs_type, str(self.get_parameter("observations_topic").value), 5
+            self._obs_type, str(self.get_parameter("observations_topic").value), 20
         )
         self.create_service(Trigger, "/person_follow/reset_target", self._reset)
 
@@ -164,20 +128,10 @@ class YoloTargetNode(Node):
         self._tag_detector = PersonTagDetector(
             upscale=float(str(self.get_parameter("tag_roi_upscale").value)),
         )
-        self._band_selector = ColorBandPersonIdentity(
-            lost_frames=int(str(self.get_parameter("lost_frames").value)),
-            lost_timeout_s=float(str(self.get_parameter("lost_timeout_s").value)),
-            ambiguity_iou=float(str(self.get_parameter("ambiguity_iou").value)),
-            confirm_frames=int(str(self.get_parameter("band_confirm_frames").value)),
-        )
-        self._bands_detector = PersonColorBandsDetector(self._bands_config_from_params())
         self._min_confidence = float(str(self.get_parameter("min_confidence").value))
-        self._reid: ReidBranch | None = None
-        if self._resolve_identity_mode() == "reid":
-            self._reid = ReidBranch(self._reid_config_from_params())
-        self.create_service(Trigger, "/person_follow/enroll_target", self._enroll)
         self._bridge = CvBridge()
         self._annotation = PersonAnnotationPublisher(self)
+        self._hand_raise = HandRaisePerception(self)
         self._frame_count = 0
 
         qos = QoSProfile(
@@ -190,74 +144,11 @@ class YoloTargetNode(Node):
         self.create_subscription(Image, image_topic, self._image_callback, qos)
         self.get_logger().info(
             f"YOLO {model_name} imgsz={self._imgsz} on {image_topic}, "
-            f"one-shot ROI tag confirm {self._family}:{self._tag_id}, "
-            f"identity_mode={self._resolve_identity_mode()}"
+            f"one-shot ROI tag confirm {self._family}:{self._tag_id}"
         )
-
-    def _bands_config_from_params(self) -> ColorBandsConfig:
-        """Build the band detector config from declared yaml-tunable params."""
-        return ColorBandsConfig(
-            leg_roi_fraction=float(str(self.get_parameter("band_leg_roi_fraction").value)),
-            min_area_px=float(str(self.get_parameter("band_min_area_px").value)),
-            max_color_ratio=float(str(self.get_parameter("band_max_color_ratio").value)),
-            min_sep_ratio=float(str(self.get_parameter("band_min_sep_ratio").value)),
-            max_dx_ratio=float(str(self.get_parameter("band_max_dx_ratio").value)),
-            red_hue_low_a=int(str(self.get_parameter("band_red_hue_low_a").value)),
-            red_hue_high_a=int(str(self.get_parameter("band_red_hue_high_a").value)),
-            red_hue_low_b=int(str(self.get_parameter("band_red_hue_low_b").value)),
-            red_hue_high_b=int(str(self.get_parameter("band_red_hue_high_b").value)),
-            red_sat_min=int(str(self.get_parameter("band_red_sat_min").value)),
-            red_val_min=int(str(self.get_parameter("band_red_val_min").value)),
-            blue_hue_low=int(str(self.get_parameter("band_blue_hue_low").value)),
-            blue_hue_high=int(str(self.get_parameter("band_blue_hue_high").value)),
-            blue_sat_min=int(str(self.get_parameter("band_blue_sat_min").value)),
-            blue_val_min=int(str(self.get_parameter("band_blue_val_min").value)),
-        )
-
-    def _resolve_identity_mode(self) -> str:
-        """Return the selected identity mode, defaulting invalid values to apriltag."""
-        mode = str(self.get_parameter("identity_mode").value).strip().lower()
-        if mode == "reid":
-            return mode
-        if mode in _ROLLBACK_MODES:
-            return mode
-        self.get_logger().warning(
-            f"unknown identity_mode={mode!r}; falling back to apriltag"
-        )
-        return "apriltag"
-
-    def _reid_config_from_params(self) -> ReidBranchConfig:
-        """Build the ReID branch config from declared yaml-tunable params."""
-        match_hz = float(str(self.get_parameter("reid_match_hz").value))
-        return ReidBranchConfig(
-            lost_frames=int(str(self.get_parameter("lost_frames").value)),
-            lost_timeout_s=float(str(self.get_parameter("lost_timeout_s").value)),
-            ambiguity_iou=float(str(self.get_parameter("ambiguity_iou").value)),
-            enroll_samples=int(str(self.get_parameter("reid_enroll_samples").value)),
-            enroll_timeout_ns=int(float(str(self.get_parameter("reid_enroll_timeout_s").value)) * 1_000_000_000),
-            min_crop_height_px=int(str(self.get_parameter("reid_min_crop_height_px").value)),
-            match_threshold=float(str(self.get_parameter("reid_match_threshold").value)),
-            match_margin=float(str(self.get_parameter("reid_match_margin").value)),
-            match_interval_ns=int(1_000_000_000 / match_hz) if match_hz > 0.0 else 200_000_000,
-            checkpoint_path=str(self.get_parameter("reid_checkpoint").value),
-            expected_sha256=str(self.get_parameter("reid_expected_sha256").value),
-        )
-
-    def _enroll(self, _req: Trigger.Request, resp: Trigger.Response) -> Trigger.Response:
-        if self._resolve_identity_mode() != "reid" or self._reid is None:
-            resp.success = False
-            resp.message = "enroll_target needs identity_mode=reid"
-            return resp
-        ok, message = self._reid.start_enrollment(self.get_clock().now().nanoseconds)
-        resp.success = ok
-        resp.message = message
-        return resp
 
     def _reset(self, _req: Trigger.Request, resp: Trigger.Response) -> Trigger.Response:
         self._selector.reset()
-        self._band_selector.reset()
-        if self._reid is not None:
-            self._reid.reset()
         self._tracker.reset()
         resp.success = True
         resp.message = "YOLO target reset; searching for stable person"
@@ -293,6 +184,11 @@ class YoloTargetNode(Node):
         tracked = self._tracker.update(boxes)
         observations: list[TrackObservation] = []
         image_stamp_ns = int(msg.header.stamp.sec) * 1_000_000_000 + int(msg.header.stamp.nanosec)
+        received_stamp_ns = (
+            int(received_stamp.sec) * 1_000_000_000 + int(received_stamp.nanosec)
+        )
+        if image_stamp_ns <= 0 or abs(received_stamp_ns - image_stamp_ns) > 5_000_000_000:
+            image_stamp_ns = received_stamp_ns
         for (tid, (x1, y1, x2, y2), conf) in tracked:
             if conf < self._min_confidence:
                 continue
@@ -304,42 +200,12 @@ class YoloTargetNode(Node):
                 )
             )
 
-        mode = self._resolve_identity_mode()
-        tags: tuple[TagOverlay, ...] = ()
-        bands: tuple[BandOverlay, ...] = ()
-        reid_state: str | None = None
-        reid_score = 0.0
-        needs_tag = False
-        needs_bands = False
-        if mode == "color_bands":
-            needs_bands = self._band_selector.needs_confirmation(observations, image_stamp_ns)
-            band_overlays = (
-                self._bands_detector.detect(frame, observations) if needs_bands else ()
-            )
-            banded_ids = banded_tracks(observations, band_overlays)
-            result = self._band_selector.update(observations, banded_ids, image_stamp_ns)
-            bands = tuple(
-                BandOverlay(
-                    track_id=overlay.track_id,
-                    red_center=overlay.red_center,
-                    blue_center=overlay.blue_center,
-                )
-                for overlay in band_overlays
-            )
-        elif mode == "reid":
-            if self._reid is None:
-                self._reid = ReidBranch(self._reid_config_from_params())
-            outcome = self._reid.update(frame, observations, image_stamp_ns)
-            result = outcome.result
-            reid_state = outcome.status
-            reid_score = outcome.active_score
-        else:
-            needs_tag = self._selector.needs_confirmation(observations, image_stamp_ns)
-            tags: tuple[TagOverlay, ...] = (
-                self._tag_detector.detect(frame, observations) if needs_tag else ()
-            )
-            confirmed_ids = tagged_tracks(observations, tags, self._tag_id)
-            result = self._selector.update(observations, confirmed_ids, image_stamp_ns)
+        needs_tag = self._selector.needs_confirmation(observations, image_stamp_ns)
+        tags: tuple[TagOverlay, ...] = (
+            self._tag_detector.detect(frame, observations) if needs_tag else ()
+        )
+        confirmed_ids = tagged_tracks(observations, tags, self._tag_id)
+        result = self._selector.update(observations, confirmed_ids, image_stamp_ns)
         header = Header()
         header.stamp = received_stamp
         header.frame_id = self._camera_frame
@@ -385,14 +251,14 @@ class YoloTargetNode(Node):
             self._obs_pub.publish(presence)
         self._target_pub.publish(target_msg)
         self._obs_pub.publish(obs_msg)
-        self._annotation.publish(frame, tracked, result, msg.header, tags, bands, reid_state)
+        poses, raised = self._hand_raise.publish(
+            frame, result, header, source_stamp_ns=image_stamp_ns)
+        self._annotation.publish(frame, tracked, result, msg.header, tags, poses, raised)
         self._frame_count += 1
         if self._frame_count % self._log_every == 0:
             self.get_logger().info(
                 f"yolo frames={self._frame_count} state={result.state.value} "
-                f"tracks={len(tracked)} tags={len(tags)} tag_search={needs_tag} "
-                f"mode={mode} bands={len(bands)} bands_search={needs_bands} "
-                f"reid={reid_state} reid_score={reid_score:.2f}"
+                f"tracks={len(tracked)} tags={len(tags)} tag_search={needs_tag}"
             )
 
 

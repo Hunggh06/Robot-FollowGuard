@@ -6,7 +6,7 @@ zone_polygon_points parameter. The polygon is the SAFE area boundary.
 
 Flow: ARMED -> (person outside for leaving_verify_s) -> say S1 ->
 after ask_delay_s say S2 -> every repeat_s re-ask while the normal
-follow keeps running -> text confirm -> say S3, take over Nav2
+follow keeps running -> target holds one hand up -> say S3, take over Nav2
 (guide_active=true) and drive to the fixed return point at
 guide_max_vel_x -> on arrival say S4, spin-verify the person (max
 search_max_spin_revolutions, existing spin behavior) -> person back
@@ -46,21 +46,12 @@ from .zone_guide_logic import (
     SAY_BACK_SAFE,
     SAY_GUIDE_CONFIRMED,
     SAY_VIOLATION,
-    confirm_match,
     debounce_outside,
     latch_polygon,
     point_in_polygon,
     polygon_centroid,
 )
-
-
-def _normalize_say(text: str) -> str:
-    """Normalize speech text for own-prompt echo comparison.
-
-    Lowercase with collapsed whitespace so STT spacing noise does not
-    defeat the filter. Diacritics are preserved.
-    """
-    return " ".join(text.strip().lower().split())
+from .zone_hand_raise import ZoneHandRaise
 
 
 class ZoneGuardRuntime(Node):
@@ -89,11 +80,7 @@ class ZoneGuardRuntime(Node):
         self._phase_since_ns = 0
         self._outside_accum_s = 0.0
         self._last_repeat_ns = 0
-        self._confirm_pending = False
-        self._confirm_ns = 0
-        self._last_say_ns = 0
-        self._last_say_text = ""
-        self._recent_say: list[tuple[str, int]] = []
+        self._hand_confirm = ZoneHandRaise(self, self._float("max_target_age_s"))
         self._pending_say: str | None = None
         self._guide_active = False
         self._guide_pending = None
@@ -110,6 +97,7 @@ class ZoneGuardRuntime(Node):
         self._spin_accum_rad = 0.0
         self._last_spin_ns = 0
         self._verify_pending = None
+        self._verify_pending_step_rad = 0.0
         self._verify_handle: ClientGoalHandle | None = None
         self._verify_cancel_requested = False
         self._verify_cancel_pending = False
@@ -140,9 +128,6 @@ class ZoneGuardRuntime(Node):
         self.create_subscription(
             PointStamped, str(self.get_parameter("clicked_point_topic").value),
             self._clicked_callback, 10)
-        self.create_subscription(
-            String, str(self.get_parameter("confirm_topic").value),
-            self._confirm_callback, 10)
         from rclpy.qos import qos_profile_sensor_data
         self.create_subscription(
             LaserScan, str(self.get_parameter("scan_topic").value),
@@ -155,7 +140,6 @@ class ZoneGuardRuntime(Node):
         self.declare_parameter("target_topic", "/person_follow/target")
         self.declare_parameter("scan_topic", "/scan")
         self.declare_parameter("clicked_point_topic", "/clicked_point")
-        self.declare_parameter("confirm_topic", "/phone/speech_text")
         self.declare_parameter("say_topic", "/phone/speaker/say")
         self.declare_parameter("guide_active_topic", "/person_follow/guide_active")
         self.declare_parameter("guide_status_topic", "/person_follow/guide_status")
@@ -171,11 +155,6 @@ class ZoneGuardRuntime(Node):
         self.declare_parameter("repeat_s", 15.0)
         self.declare_parameter("max_target_age_s", 1.0)
         self.declare_parameter("max_scan_age_s", 0.25)
-        self.declare_parameter("confirm_keyword", "xác nhận")
-        self.declare_parameter("confirm_valid_s", 30.0)
-        self.declare_parameter("confirm_ignore_after_say_s", 3.0)
-        self.declare_parameter("confirm_ignore_per_char_s", 0.12)
-        self.declare_parameter("confirm_echo_window_s", 20.0)
         self.declare_parameter("guide_return_x", 0.0)
         self.declare_parameter("guide_return_y", 0.0)
         self.declare_parameter("guide_return_yaw", 0.0)
@@ -191,6 +170,7 @@ class ZoneGuardRuntime(Node):
 
     def _target_callback(self, message: PersonTarget) -> None:
         self._target = message
+        self._hand_confirm.update_target(message)
 
     def _scan_callback(self, message: LaserScan) -> None:
         self._scan_stamp_ns = stamp_ns(message)
@@ -219,51 +199,13 @@ class ZoneGuardRuntime(Node):
                 f"draw_clicks_{len(self._clicks)}_of_"
                 f"{int(str(self.get_parameter('zone_click_points').value))}")
 
-    def _confirm_callback(self, message: String) -> None:
-        # The phone mic hears our own speaker, and our own questions contain
-        # the keyword, so two layers guard the confirmation:
-        # 1. a speech-duration-scaled ignore window measured from publish
-        #    (TTS speech + STT latency outlast the fixed base window), and
-        # 2. an echo filter dropping texts that contain a recently spoken
-        #    prompt verbatim (late full-sentence echoes).
-        now_ns = self.get_clock().now().nanoseconds
-        base_s = float(str(self.get_parameter("confirm_ignore_after_say_s").value))
-        per_char_s = float(str(self.get_parameter("confirm_ignore_per_char_s").value))
-        window_s = base_s + len(self._last_say_text) * per_char_s
-        if (now_ns - self._last_say_ns) / 1_000_000_000.0 < window_s:
-            return
-        text = str(message.data)
-        if self._is_own_echo(text, now_ns):
-            return
-        if confirm_match(
-            text,
-            str(self.get_parameter("confirm_keyword").value),
-        ):
-            self._confirm_pending = True
-            self._confirm_ns = now_ns
-
-    def _is_own_echo(self, text: str, now_ns: int) -> bool:
-        """True when the text contains a recently spoken prompt verbatim."""
-        window_s = float(str(self.get_parameter("confirm_echo_window_s").value))
-        incoming = _normalize_say(text)
-        if not incoming:
-            return False
-        for prompt, said_ns in self._recent_say:
-            if (now_ns - said_ns) / 1_000_000_000.0 > window_s:
-                continue
-            prompt_norm = _normalize_say(prompt)
-            if prompt_norm and prompt_norm in incoming:
-                return True
-        return False
-
     def _reset_zone(self, _req: Trigger.Request, resp: Trigger.Response) -> Trigger.Response:
         self._clicks = []
         self._polygon = None
         self._phase = "IDLE"
         self._outside_accum_s = 0.0
         self._spin_accum_rad = 0.0
-        self._confirm_pending = False
-        self._confirm_ns = 0
+        self._hand_confirm.set_waiting(False, self.get_clock().now().nanoseconds)
         # Reset clears UI/zone state immediately but retains action ownership:
         # the old guide/verify handoff stays cancelled-and-owned while IDLE
         # and blocks every new motion goal until its terminal result lands,
@@ -361,13 +303,9 @@ class ZoneGuardRuntime(Node):
             message = String()
             message.data = self._pending_say
             self._say_pub.publish(message)
-            said_ns = self.get_clock().now().nanoseconds
-            self._last_say_ns = said_ns
-            self._last_say_text = message.data
-            self._recent_say.append((_normalize_say(message.data), said_ns))
-            del self._recent_say[:-4]
             self._pending_say = None
         if self._polygon is None:
+            self._hand_confirm.set_waiting(False, now_ns)
             if self._phase != "IDLE":
                 self._phase = "IDLE"
             self._publish_status("idle", "idle_no_zone")
@@ -375,6 +313,8 @@ class ZoneGuardRuntime(Node):
         visible, position = self._person_state(now_ns)
         outside = visible and position is not None and not point_in_polygon(
             position[0], position[1], self._polygon)
+        self._hand_confirm.set_waiting(
+            self._phase == "WAIT_CONFIRM" and outside and not self._guide_handoff_busy(), now_ns)
         if self._phase == "IDLE":
             self._phase = "ARMED"
         if self._phase == "ARMED":
@@ -397,9 +337,6 @@ class ZoneGuardRuntime(Node):
             if self._guide_handoff_busy():
                 self._publish_status("violation", "violation_handoff_busy")
                 return
-            if self._consume_confirm():
-                self._start_guide(now_ns)
-                return
             if (now_ns - self._phase_since_ns) / 1_000_000_000.0 >= float(
                     str(self.get_parameter("ask_delay_s").value)):
                 self._enter("WAIT_CONFIRM", now_ns)
@@ -417,7 +354,7 @@ class ZoneGuardRuntime(Node):
             if self._guide_handoff_busy():
                 self._publish_status("wait_confirm", "wait_confirm_handoff_busy")
                 return
-            if self._consume_confirm():
+            if outside and self._consume_confirm():
                 self._start_guide(now_ns)
                 return
             if (now_ns - self._last_repeat_ns) / 1_000_000_000.0 >= float(
@@ -477,17 +414,15 @@ class ZoneGuardRuntime(Node):
             return
 
     def _enter(self, phase: str, now_ns: int) -> None:
+        self._hand_confirm.set_waiting(False, now_ns)
         self._phase = phase
         self._phase_since_ns = now_ns
 
     def _consume_confirm(self) -> bool:
-        if self._confirm_pending:
-            self._confirm_pending = False
-            valid_s = float(str(self.get_parameter("confirm_valid_s").value))
-            age_s = (self.get_clock().now().nanoseconds - self._confirm_ns) / 1_000_000_000.0
-            if 0.0 <= age_s <= valid_s:
-                return True
-        return False
+        return (
+            self._phase == "WAIT_CONFIRM"
+            and self._hand_confirm.consume(self.get_clock().now().nanoseconds)
+        )
 
     def _start_guide(self, now_ns: int) -> None:
         if self._guide_handoff_busy():
@@ -663,6 +598,7 @@ class ZoneGuardRuntime(Node):
             self.get_logger().warning(f"speed change unavailable: {error}")
 
     def _limit_speed(self) -> None:
+        guide_vel = float(str(self.get_parameter("guide_max_vel_x").value))
         try:
             from rcl_interfaces.srv import GetParameters
             client = self.create_client(
@@ -679,15 +615,18 @@ class ZoneGuardRuntime(Node):
                     except Exception:  # noqa: BLE001
                         return
                     if values:
-                        value = values[0].double_value
-                        if value > 0.0:
-                            self._saved_max_vel_x = float(value)
+                        value = float(values[0].double_value)
+                        if (
+                            value > 0.0
+                            and self._saved_max_vel_x is None
+                            and not math.isclose(value, guide_vel, rel_tol=1e-6, abs_tol=1e-6)
+                        ):
+                            self._saved_max_vel_x = value
 
                 client.call_async(request).add_done_callback(_got)
         except Exception as error:  # noqa: BLE001
             self.get_logger().warning(f"speed save unavailable: {error}")
-        self._set_controller_param(
-            "max_vel_x", float(str(self.get_parameter("guide_max_vel_x").value)))
+        self._set_controller_param("max_vel_x", guide_vel)
 
     def _restore_speed(self) -> None:
         if self._saved_max_vel_x is None:
@@ -791,8 +730,9 @@ class ZoneGuardRuntime(Node):
             return
         pending = self._action_client.send_goal_async(goal)
         self._verify_pending = pending
-        pending.add_done_callback(self._verify_response_callback)
+        self._verify_pending_step_rad = abs(step_rad)
         self._spin_accum_rad += abs(step_rad)
+        pending.add_done_callback(self._verify_response_callback)
 
     def _verify_handoff_busy(self) -> bool:
         """True while an old verify goal still owns the handoff."""
@@ -806,21 +746,26 @@ class ZoneGuardRuntime(Node):
     def _verify_response_callback(self, future) -> None:  # type: ignore[no-untyped-def]
         """Own the pending verify send until the server accepts or rejects it."""
         self._verify_pending = None
+        pending_step = getattr(self, "_verify_pending_step_rad", 0.0)
+        self._verify_pending_step_rad = 0.0
         try:
             error = future.exception()
         except Exception:  # noqa: BLE001
             error = True
         if error is not None:
+            self._spin_accum_rad = max(0.0, self._spin_accum_rad - pending_step)
             self._verify_cancel_requested = False
             self._verify_handle = None
             return
         try:
             handle = future.result()
         except Exception:  # noqa: BLE001
+            self._spin_accum_rad = max(0.0, self._spin_accum_rad - pending_step)
             self._verify_cancel_requested = False
             self._verify_handle = None
             return
         if handle is None or not handle.accepted:
+            self._spin_accum_rad = max(0.0, self._spin_accum_rad - pending_step)
             self._verify_cancel_requested = False
             self._verify_handle = None
             return

@@ -18,7 +18,9 @@ The metric node projects fresh LiDAR data into the confirmed image box. A
 metric target is valid only when sensor age, skew, calibration, and TF gates
 hold. Nav2 receives follow goals only from valid metric data. The follower
 uses a follow distance, clearance corridor, and goal-update thresholds from
-`person_follow.yaml`.
+`person_follow.yaml`. While a confirmed target is visible and inside the
+follow stand-off, the follower sends a same-position Nav2 goal to turn and
+face it (no `/spin`, no direct `/cmd_vel`).
 
 ## Recovery
 

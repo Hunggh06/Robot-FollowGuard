@@ -62,8 +62,24 @@ class TagPersonIdentity:
                 self._awaiting_confirmation = False
             else:
                 if self._target_id is not None:
-                    self._missing_frames += 1
                     long_gap = stamp_ns - self._last_seen_ns >= self._lost_timeout_ns
+                    ambiguous = target is not None and any(
+                        p.track_id != target.track_id and bbox_iou(target.bbox, p.bbox) >= self._ambiguity_iou
+                        for p in observations
+                    )
+                    if (
+                        target is not None
+                        and not self._awaiting_confirmation
+                        and not long_gap
+                        and not ambiguous
+                        and len(observations) == 1
+                    ):
+                        self._state = TargetState.TRACKING
+                        self._missing_frames = 0
+                        self._last_seen_ns = stamp_ns
+                        self._last_bbox = target.bbox
+                        return self._result(observations, target)
+                    self._missing_frames += 1
                     if long_gap and target is None:
                         self._target_id = None
                         self._last_bbox = None

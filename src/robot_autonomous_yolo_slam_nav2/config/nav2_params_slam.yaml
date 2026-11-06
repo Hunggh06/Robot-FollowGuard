@@ -82,18 +82,18 @@ controller_server:
       stateful: true
       plugin: nav2_controller::SimpleGoalChecker
       xy_goal_tolerance: 0.35
-      yaw_goal_tolerance: 0.30
+      yaw_goal_tolerance: 0.10
     FollowPath:
       plugin: dwb_core::DWBLocalPlanner
       debug_trajectory_details: true
-      min_vel_x: -0.15
-      max_vel_x: 0.35
+      min_vel_x: -0.10
+      max_vel_x: 0.25
       max_vel_y: 0.0
-      max_vel_theta: 1.73
+      max_vel_theta: 1.0
       min_speed_xy: 0.09
-      max_speed_xy: 0.35
+      max_speed_xy: 0.25
       transform_tolerance: 2.0
-      min_speed_theta: 1.08
+      min_speed_theta: 0.05
       acc_lim_x: 1.5
       acc_lim_y: 0.0
       acc_lim_theta: 1.5
@@ -308,9 +308,9 @@ behavior_server:
     transform_tolerance: 0.1
     use_sim_time: false
     simulate_ahead_time: 2.0
-    max_rotational_vel: 1.73
-    min_rotational_vel: 1.08
-    rotational_acc_lim: 3.2
+    max_rotational_vel: 1.0
+    min_rotational_vel: 0.5
+    rotational_acc_lim: 1.5
 robot_state_publisher:
   ros__parameters:
     use_sim_time: false
@@ -331,13 +331,13 @@ velocity_smoother:
     scale_velocities: false
     feedback: OPEN_LOOP
     max_velocity:
-    - 0.35
+    - 0.25
     - 0.0
-    - 1.73
+    - 1.0
     min_velocity:
-    - -0.15
+    - -0.10
     - 0.0
-    - -1.73
+    - -1.0
     max_accel:
     - 2.5
     - 0.0

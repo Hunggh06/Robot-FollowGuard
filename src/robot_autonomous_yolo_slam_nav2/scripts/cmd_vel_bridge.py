@@ -30,8 +30,10 @@ MAX_RPM = 126.0
 ACCEL_LIM = 60.0
 # He so hieu chuan toc do firmware (1.0 = tin firmware 1:1).
 OUTPUT_SCALE = 1.0
-KICK_START_RPM = 25.0        # vuot ma sat tinh khi banh dang dung yen
+KICK_START_RPM = 34.0        # vuot ma sat tinh nhe nhang khi ca xe dang dung yen
 KEEP_ROLLING_RPM = 25.0
+ACTIVE_ROLLING_RPM = 28.0    # san toc do khi di thang cham, khong khoa cung banh trong khi om cua
+KICK_HOLD_TICKS = 2          # giu xung kick-start ngan 0.10s (2 * 50ms) khi bat dau tu trang thai dung yen
 CMD_TIMEOUT = 0.5            # kieu twist_mux timeout: qua han khong co
                              # /cmd_vel thi ve RPM 0, khong giu ga cu
 
@@ -86,6 +88,8 @@ class CmdVelBridge(Node):
         self.rpm_r = 0.0
         self.target_l = 0.0
         self.target_r = 0.0
+        self._kick_l = 0
+        self._kick_r = 0
         self.last_cmd = None
         self.last = None
         self.create_timer(0.05, self.ramp)   # 20 Hz, khop PID 10 Hz cua ESP32
@@ -127,15 +131,81 @@ class CmdVelBridge(Node):
                 resolve_bridge_timeout(
                     self.target_l, self.target_r, self.rpm_l, self.rpm_r, True
                 )
+            self._kick_l = 0
+            self._kick_r = 0
             m = Float32MultiArray()
             m.data = [0.0, 0.0]
             self.cmd.publish(m)
             return
 
-        self.rpm_l = self._approach(
-            self.rpm_l, self._rolling_floor(self.rpm_l, self.target_l), step)
-        self.rpm_r = self._approach(
-            self.rpm_r, self._rolling_floor(self.rpm_r, self.target_r), step)
+        # Chi kick-start khi CA HAI banh dang dung yen (khoi hanh tu trang thai tinh).
+        # Khi xe dang lan banh hoac dang om cua (1 banh quay nhanh, banh trong quay cham/dao chieu),
+        # tuyet doi khong ep nhay coc +/-KICK_START_RPM hay khoa cung ACTIVE_ROLLING_RPM len banh trong.
+        robot_stopped = abs(self.rpm_l) < 1e-3 and abs(self.rpm_r) < 1e-3
+        max_abs_target = max(abs(self.target_l), abs(self.target_r))
+        is_differential_turn = (
+            abs(self.target_l - self.target_r) > 4.0
+            and max_abs_target >= ACTIVE_ROLLING_RPM
+        )
+
+        # Banh trai
+        if self.target_l == 0.0:
+            self._kick_l = 0
+            tgt_l = 0.0
+        else:
+            if robot_stopped:
+                self._kick_l = KICK_HOLD_TICKS
+            elif self.rpm_l * self.target_l < 0.0:
+                self._kick_l = 0
+            if self._kick_l > 0:
+                self._kick_l -= 1
+                floor_l = KICK_START_RPM
+            elif is_differential_turn and abs(self.target_l) < abs(self.target_r):
+                # Banh trong cua duoc phep quay cham theo dung ti le vi sai de om cua muot
+                floor_l = 0.0
+            else:
+                floor_l = ACTIVE_ROLLING_RPM
+            tgt_l = (
+                math.copysign(floor_l, self.target_l)
+                if abs(self.target_l) < floor_l
+                else self.target_l
+            )
+
+        # Banh phai
+        if self.target_r == 0.0:
+            self._kick_r = 0
+            tgt_r = 0.0
+        else:
+            if robot_stopped:
+                self._kick_r = KICK_HOLD_TICKS
+            elif self.rpm_r * self.target_r < 0.0:
+                self._kick_r = 0
+            if self._kick_r > 0:
+                self._kick_r -= 1
+                floor_r = KICK_START_RPM
+            elif is_differential_turn and abs(self.target_r) < abs(self.target_l):
+                # Banh trong cua duoc phep quay cham theo dung ti le vi sai de om cua muot
+                floor_r = 0.0
+            else:
+                floor_r = ACTIVE_ROLLING_RPM
+            tgt_r = (
+                math.copysign(floor_r, self.target_r)
+                if abs(self.target_r) < floor_r
+                else self.target_r
+            )
+
+        accel_step_l = step * 2.0 if abs(tgt_l) > abs(self.rpm_l) else step * 1.5
+        accel_step_r = step * 2.0 if abs(tgt_r) > abs(self.rpm_r) else step * 1.5
+
+        if self.target_l != 0.0 and self.rpm_l == 0.0 and self._kick_l > 0:
+            self.rpm_l = math.copysign(min( abs(tgt_l), KICK_START_RPM), tgt_l)
+        else:
+            self.rpm_l = self._approach(self.rpm_l, tgt_l, accel_step_l)
+
+        if self.target_r != 0.0 and self.rpm_r == 0.0 and self._kick_r > 0:
+            self.rpm_r = math.copysign(min(abs(tgt_r), KICK_START_RPM), tgt_r)
+        else:
+            self.rpm_r = self._approach(self.rpm_r, tgt_r, accel_step_r)
 
         m = Float32MultiArray()
         m.data = [self.rpm_l, self.rpm_r]

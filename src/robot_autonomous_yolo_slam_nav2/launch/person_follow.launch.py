@@ -26,7 +26,7 @@ def generate_launch_description() -> LaunchDescription:
     slam_launch = os.path.join(package_dir, "launch", "slam_nav.launch.py")
     use_slam = LaunchConfiguration("use_slam")
     calibration_file = LaunchConfiguration("calibration_file")
-    identity_mode = LaunchConfiguration("identity_mode")
+    start_person_follow = LaunchConfiguration("start_person_follow")
     return LaunchDescription(
         [
             DeclareLaunchArgument(
@@ -40,13 +40,15 @@ def generate_launch_description() -> LaunchDescription:
                 description="Measured ROS CameraInfo YAML.",
             ),
             DeclareLaunchArgument(
-                "identity_mode",
-                default_value="apriltag",
-                description="YOLO identity check: reid gallery, color_bands, or apriltag rollback.",
+                "start_person_follow",
+                default_value="true",
+                description="Run the Nav2 person-follow and zone-guard goal "
+                            "clients. Set false for plain Nav2 goals so the "
+                            "lost-target search spin cannot fight manual goals.",
             ),
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(slam_launch),
-                launch_arguments={"start_person_follow": "false"}.items(),
+                launch_arguments={"start_perception_nodes": "false"}.items(),
                 condition=IfCondition(use_slam),
             ),
             Node(
@@ -80,7 +82,7 @@ def generate_launch_description() -> LaunchDescription:
                 executable="yolo_target_node.py",
                 name="yolo_target_node",
                 output="screen",
-                parameters=[config_path, {"identity_mode": identity_mode}],
+                parameters=[config_path],
             ),
             Node(
                 package="robot_autonomous_yolo_slam_nav2",
@@ -94,6 +96,7 @@ def generate_launch_description() -> LaunchDescription:
                 executable="nav2_person_follow.py",
                 name="nav2_person_follow",
                 output="screen",
+                condition=IfCondition(start_person_follow),
                 parameters=[config_path],
             ),
             Node(
@@ -101,6 +104,7 @@ def generate_launch_description() -> LaunchDescription:
                 executable="zone_guard_node.py",
                 name="zone_guard",
                 output="screen",
+                condition=IfCondition(start_person_follow),
                 parameters=[config_path],
             ),
         ],

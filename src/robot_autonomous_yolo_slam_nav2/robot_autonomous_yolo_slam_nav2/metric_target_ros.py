@@ -11,7 +11,7 @@ from sensor_msgs_py import point_cloud2
 from std_msgs.msg import Header
 
 from .metric_association import MetricPersonObservation, Point3D, RotationMatrix
-from .reid_target_helpers import PersonObservationFields, PersonTargetFields
+from .person_message_fields import PersonObservationFields, PersonTargetFields
 from .metric_target_helpers import CameraInfoFields, LaserScanFields, quaternion_to_rotation, is_fresh, timestamps_within_skew
 from robot_autonomous_yolo_slam_nav2.msg import PersonObservation, PersonTarget
 

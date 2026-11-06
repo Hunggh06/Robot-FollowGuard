@@ -8,7 +8,6 @@ from robot_autonomous_yolo_slam_nav2.zone_guide_logic import (  # noqa: E402
     SAY_BACK_SAFE,
     SAY_GUIDE_CONFIRMED,
     SAY_VIOLATION,
-    confirm_match,
     debounce_outside,
     latch_polygon,
     point_in_polygon,
@@ -65,16 +64,10 @@ def test_debounce_resets_when_back_inside() -> None:
     assert (accum, confirmed) == (0.0, False)
 
 
-def test_confirm_match_is_case_insensitive_substring() -> None:
-    assert confirm_match("Dạ XÁC NHẬN ạ", "xác nhận") is True
-    assert confirm_match("đi tiếp đi", "xác nhận") is False
-    assert confirm_match("xác nhận", "") is False
-
-
 def test_speech_lines_are_exact() -> None:
     assert SAY_VIOLATION == "Bạn đã đi vào vùng cấm, quay đầu ngay lập tức"
-    assert SAY_ASK_CONFIRM == "Hãy nói xác nhận để chuyển chế độ dẫn đường"
-    assert SAY_GUIDE_CONFIRMED == "Đã xác nhận chuyển chế độ dẫn đường"
+    assert SAY_ASK_CONFIRM == "Hãy nhấc một bàn chân lên khỏi mặt đất và giữ một giây để chuyển chế độ dẫn đường"
+    assert SAY_GUIDE_CONFIRMED == "Đã xác nhận, đi theo tôi để quay về vùng an toàn"
     assert SAY_BACK_SAFE == "Bạn đã quay trở lại vùng an toàn"
 
 

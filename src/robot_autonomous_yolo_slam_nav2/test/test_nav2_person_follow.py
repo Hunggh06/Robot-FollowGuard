@@ -12,6 +12,7 @@ from robot_autonomous_yolo_slam_nav2.follow_goal_helpers import (  # noqa: E402
     FollowDecisionStatus,
     ObstaclePoint,
     TargetGeometry,
+    decide_face_goal,
     decide_follow_goal,
     grace_advance,
     update_close_latch,
@@ -228,3 +229,138 @@ def test_single_frame_blip_does_not_fire_cancel() -> None:
 
     # Then the counter resets instead of firing late.
     assert (grace.consecutive, fire) == (0, False)
+
+
+def test_first_face_goal_targets_current_position_with_target_bearing() -> None:
+    # Given a fresh confirmed target inside the follow stand-off.
+    target = _target(point=(0.7, 0.0, 0.0), range_m=0.7)
+
+    # When no face goal has been sent yet.
+    decision = decide_face_goal(target, _config(), None, None)
+
+    # Then a same-position goal faces the target bearing without cancelling.
+    assert decision.status is FollowDecisionStatus.GOAL
+    assert decision.goal_base_link == (0.0, 0.0)
+    assert decision.goal_yaw_rad == pytest.approx(target.bearing_rad)
+    assert decision.cancel_active_goal is False
+    assert decision.reason == "face_target_in_place"
+
+
+def test_moved_face_bearing_sends_new_goal_after_interval() -> None:
+    # Given a prior face goal and a bearing moved past the yaw threshold.
+    target = _target(point=(0.7, 0.0, 0.0), range_m=0.7, bearing_rad=0.5)
+
+    # When the update interval has elapsed since the last face goal.
+    decision = decide_face_goal(target, _config(), 0.0, 1.0)
+
+    # Then a new same-position face goal is sent.
+    assert decision.status is FollowDecisionStatus.GOAL
+    assert decision.goal_base_link == (0.0, 0.0)
+    assert decision.goal_yaw_rad == pytest.approx(0.5)
+    assert decision.cancel_active_goal is False
+    assert decision.reason == "face_target_in_place"
+
+
+def test_small_face_bearing_change_holds_quietly() -> None:
+    # Given a prior face goal and a bearing barely moved.
+    target = _target(point=(0.7, 0.0, 0.0), range_m=0.7, bearing_rad=0.1)
+
+    # When the interval elapsed but the yaw delta is below threshold.
+    decision = decide_face_goal(target, _config(), 0.0, 1.0)
+
+    # Then no new goal is sent and nothing is cancelled.
+    assert decision.status is FollowDecisionStatus.HOLD
+    assert decision.goal_base_link is None
+    assert decision.cancel_active_goal is False
+
+
+def test_large_face_bearing_change_within_interval_holds() -> None:
+    # Given a prior face goal and a large bearing move.
+    target = _target(point=(0.7, 0.0, 0.0), range_m=0.7, bearing_rad=1.0)
+
+    # When fewer than face_update_period_s elapsed since the last face goal.
+    decision = decide_face_goal(target, _config(), 0.0, 0.1)
+
+    # Then the update is throttled and nothing is cancelled.
+    assert decision.status is FollowDecisionStatus.HOLD
+    assert decision.goal_base_link is None
+    assert decision.cancel_active_goal is False
+
+
+def test_face_disabled_holds_without_cancel() -> None:
+    # Given face-in-standoff disabled.
+    config = FollowConfig(
+        follow_distance_m=1.0,
+        max_target_age_s=0.5,
+        corridor_half_width_m=0.4,
+        goal_update_distance_m=0.2,
+        base_frame="base_link",
+        face_target_in_standoff=False,
+    )
+    target = _target(point=(0.7, 0.0, 0.0), range_m=0.7)
+
+    # When a face decision is computed.
+    decision = decide_face_goal(target, config, None, None)
+
+    # Then no goal is sent and nothing is cancelled.
+    assert decision.status is FollowDecisionStatus.HOLD
+    assert decision.goal_base_link is None
+    assert decision.cancel_active_goal is False
+
+
+def test_face_with_nonfinite_bearing_holds_without_cancel() -> None:
+    # Given an in-standoff target with a non-finite bearing.
+    target = _target(
+        point=(0.7, 0.0, 0.0), range_m=0.7, bearing_rad=math.inf
+    )
+
+    # When a face decision is computed.
+    decision = decide_face_goal(target, _config(), None, None)
+
+    # Then no goal is sent and nothing is cancelled.
+    assert decision.status is FollowDecisionStatus.HOLD
+    assert decision.goal_base_link is None
+    assert decision.cancel_active_goal is False
+
+
+def test_face_retry_throttled_within_interval() -> None:
+    # Given a cleared yaw baseline but a recent face send (failure retry).
+    target = _target(point=(0.7, 0.0, 0.0), range_m=0.7)
+
+    # When fewer than face_update_period_s elapsed since the last send.
+    decision = decide_face_goal(target, _config(), None, 0.1)
+
+    # Then the retry is throttled and nothing is cancelled.
+    assert decision.status is FollowDecisionStatus.HOLD
+    assert decision.goal_base_link is None
+    assert decision.cancel_active_goal is False
+    assert decision.reason == "face_update_below_interval"
+
+
+def test_face_retry_allowed_after_interval() -> None:
+    # Given a cleared yaw baseline and an elapsed send interval.
+    target = _target(point=(0.7, 0.0, 0.0), range_m=0.7, bearing_rad=0.5)
+
+    # When face_update_period_s have elapsed since the last send.
+    decision = decide_face_goal(target, _config(), None, 1.0)
+
+    # Then a same-position face goal is sent.
+    assert decision.status is FollowDecisionStatus.GOAL
+    assert decision.goal_base_link == (0.0, 0.0)
+    assert decision.goal_yaw_rad == pytest.approx(0.5)
+    assert decision.cancel_active_goal is False
+    assert decision.reason == "face_target_in_place"
+
+
+def test_face_below_threshold_still_holds_after_interval() -> None:
+    # Given a prior face goal and a barely moved bearing.
+    target = _target(point=(0.7, 0.0, 0.0), range_m=0.7, bearing_rad=0.1)
+
+    # When the interval elapsed but the yaw delta is below threshold.
+    decision = decide_face_goal(target, _config(), 0.0, 1.0)
+
+    # Then no new goal is sent and nothing is cancelled.
+    assert decision.status is FollowDecisionStatus.HOLD
+    assert decision.goal_base_link is None
+    assert decision.cancel_active_goal is False
+    assert decision.reason == "face_update_below_threshold"

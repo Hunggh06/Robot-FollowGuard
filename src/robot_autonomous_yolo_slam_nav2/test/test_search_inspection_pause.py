@@ -369,21 +369,6 @@ def test_inspection_params_match_config() -> None:
     assert "_spin_pub" not in runtime_source
 
 
-def test_default_identity_mode_is_apriltag() -> None:
-    import yaml
-
-    package_dir = Path(__file__).parents[1]
-    person_follow = yaml.safe_load(
-        (package_dir / "config" / "person_follow.yaml").read_text()
-    )
-    assert (
-        person_follow["yolo_target_node"]["ros__parameters"]["identity_mode"]
-        == "apriltag"
-    )
-    launch_source = (package_dir / "launch" / "person_follow.launch.py").read_text()
-    assert 'default_value="apriltag"' in launch_source
-
-
 def test_yolo_publishes_per_person_presence() -> None:
     from robot_autonomous_yolo_slam_nav2.target_state import (
         TrackId,

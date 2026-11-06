@@ -1,8 +1,8 @@
 # YOLO Person Follow
 
-This package follows a single person selected by `identity_mode` (default
-`color_bands`: red-above-blue leg bands; rollback `apriltag` keeps
-`tag36h11` ID `0`). It does not implement GUIDE_HOME or return-home behavior.
+This package follows a single person confirmed by a `tag36h11` ID `0` AprilTag
+inside that person's YOLO bounding box. It does not implement GUIDE_HOME or
+return-home behavior.
 
 ## Inputs
 
@@ -45,9 +45,10 @@ no longer used for goals: a near wall is not person geometry.
 
 After rebuilding this version, stop and restart all package nodes.
 
-YOLO runs a single detect-only model (`yolov8n.pt`, boxes only, no pose
-keypoints). The `footpoint_*` message fields are always invalid and unused;
-all geometry is LiDAR-only.
+Following uses the existing detect-only model (`yolov8n.pt`). An additional
+`yolov8n-pose.pt` model runs only while the zone guard requests foot-lift
+confirmation. Pose never supplies distance or navigation geometry. The
+`footpoint_*` message fields remain invalid and unused; all geometry is LiDAR-only.
 
 ## Launch
 
@@ -77,8 +78,8 @@ Nav2 follow/recovery client.
 `use_slam:=false` is the hardware-independent perception wiring mode; it does not start SLAM/Nav2 bringup.
 `use_slam:=true` (the default) is the full entrypoint: it includes
 `slam_nav.launch.py` for SLAM/Nav2 bringup plus the follower chain.
-`slam_nav.launch.py` standalone defaults `start_person_follow:=false` so it
-never duplicates the follower nodes or TF when included from here.
+`slam_nav.launch.py` standalone defaults `start_perception_nodes:=false` so it
+never duplicates the perception nodes or TF when included from here.
 It also does not start a safety gate or motor bridge: any external Nav2 bringup
 must provide exactly one `safety_gate_node.py` and `cmd_vel_bridge.py`, with
 Nav2 `/cmd_vel` connected to the gate input and only `/cmd_vel_safe` connected
@@ -108,31 +109,27 @@ Select **`/person_follow/annotated`** for the combined overlay:
 
 - Green bbox: selected **TARGET**, track ID and YOLO confidence.
 - Blue/cyan bbox: other detected people, each with a track ID and confidence.
-- Red box + blue box: accepted red-above-blue leg-band components (`color_bands` mode).
-- Yellow polygon: AprilTag outline, family and tag ID (`apriltag` mode).
-- Top status: tracker state, selected target ID, person count, `bands=CONFIRM/SKIP/SEARCH`
-  and `tag=CONFIRM/SKIP/SEARCH` (only the selected mode reports `CONFIRM`).
+- Yellow polygon: AprilTag outline, family and tag ID.
+- Top status: tracker state, selected target ID, person count, and
+  `tag=CONFIRM/SKIP/SEARCH`.
 
-All person boxes come from the same YOLO inference/tracker used by following;
-no second YOLO model runs for visualization. The output preserves the source
+All displayed person boxes come from the same YOLO inference/tracker used by following;
+the conditional gesture model is not used for visualization. The output preserves the source
 image timestamp and frame. `target=none` means no person was selected.
 The overlay reports visual tracking, not permission to move: LiDAR, TF and
 Nav2 safety checks still determine whether following is possible.
 
 The default launch publishes only the combined `/person_follow/annotated` image.
-The YOLO node runs exactly one identity mode per frame (`identity_mode`:
-`color_bands` by default, `apriltag` for rollback). Both detectors run
+The YOLO node always confirms identity with the AprilTag detector, run
 in-process on person ROIs only; there is no identity topic and no full-frame
-scan. ROI evidence search runs only when the selected identity needs
-confirmation; a locked, unambiguous person is tracked without it.
+scan. ROI evidence search runs only when the identity needs confirmation; a
+locked, unambiguous person is tracked without it.
 The raw camera image remains available at `/phone/camera/back/image`.
 
-Test with red-above-blue bands on one lower leg, then hide the bands while the
+Test with `tag36h11` ID 0 inside one person's bbox, then hide the tag while the
 person remains visible, add a second person, and finally move the target out of
-view. Check the green target box, the red/blue component boxes, `bands=SKIP`
-while locked, track IDs and state in the combined image. For the tag rollback,
-launch with `identity_mode:=apriltag` and test with ID 0 inside a person's bbox
-the same way (`tag=SKIP` while locked).
+view. Check the green target box, `tag=SKIP` while locked, track IDs and state
+in the combined image.
 
 ## Recovery search
 
@@ -145,6 +142,10 @@ no recovery `NavigateToPose`): at most one bounded `Spin.Goal.target_yaw`
 in flight at a time, accumulating accepted yaw up to
 `search_max_spin_revolutions` full turns, then stopping. A confirmed
 sighting exits back to `following` at once and cancels any spin.
+
+While a confirmed target is visible and inside the follow stand-off, the
+follower sends a same-position Nav2 goal to turn and face it (no `/spin`,
+no direct `/cmd_vel`).
 
 While searching, fresh tracked people pause the spin so the existing
 ROI-only AprilTag confirmation can run without the robot rotating away:
@@ -212,7 +213,7 @@ ROS_QA_DOMAIN_ID=218 ROS_LOCALHOST_ONLY=1 python3 /tmp/opencode/floor_fallback_r
 ## Red zone guard
 
 `zone_guard_node.py` watches a hand-drawn red polygon (the SAFE area
-boundary) and guides the person home on text confirmation. Geometry is
+boundary) and guides the person back on foot-lift confirmation. Geometry is
 LiDAR-only; the camera only detects boxes/identity.
 
 - Draw by clicking 4 corners straight on the map: RViz Publish-Point
@@ -225,11 +226,19 @@ LiDAR-only; the camera only detects boxes/identity.
   `zone_polygon_points: [x1, y1, ...]`.
 - Person outside for `leaving_verify_s` (2 s) → loa
   "Bạn đã đi vào vùng cấm, quay đầu ngay lập tức". After `ask_delay_s`
-  (5 s) → "Hãy nói xác nhận để chuyển chế độ dẫn đường", repeated every
+  (5 s) → "Hãy nhấc một bàn chân lên khỏi mặt đất và giữ một giây để chuyển chế độ dẫn đường", repeated every
   `repeat_s` (15 s) while normal follow keeps running. Back inside
   cancels to armed.
-- Text on `confirm_topic` (`/phone/speech_text` from the phone app, keyword "xác nhận")
-  → "Đã xác nhận chuyển chế độ dẫn đường",   `guide_active=true` (follow
+- While waiting, the followed person lifts one foot clearly off the ground and
+  holds it for at least **1 second**. Turn toward the camera so hips, knees, and
+  both ankles are visible. The lower ankle is treated as the planted foot, and
+  the other ankle must rise by a fraction of that leg's length; with only one
+  leg visible, the ankle must rise above its knee. Low-confidence or ambiguous
+  poses do not confirm. Other people's gestures are ignored, and overlapping
+  people are rejected conservatively. Lowering the foot, losing identity/geometry,
+  stale evidence, repeated/out-of-order camera timestamps, or a gap longer than
+  0.5 s resets the hold.
+- A completed hold → "Đã xác nhận, đi theo tôi để quay về vùng an toàn", `guide_active=true` (follow
   node yields: cancels once, publishes nothing), controller `max_vel_x`
   set to `guide_max_vel_x` (0.25, same as the follow speed), Nav2 drives to the polygon centroid
   (first corner if concave; `guide_return_override: true` uses the fixed
@@ -241,6 +250,37 @@ LiDAR-only; the camera only detects boxes/identity.
   mode; outside re-arms the announce cycle; unseen after the cap waits
   stopped until the person reappears.
 - Live state: `/person_follow/guide_status` (`phase=... reason=...`).
+
+Voice input on `/phone/speech_text` no longer confirms or changes mode.
+Speaker announcements still work. Gestures during ordinary following or the
+initial warning delay are ignored. Returning inside the zone cancels the request.
+The gesture publisher reuses the exact image and selected track from the main
+YOLO callback, runs pose at up to 5 Hz only while requested, and never selects
+a new target. Missing model or uncertain evidence leaves normal following active
+without switching to guide mode.
+
+Gesture configuration in `config/person_follow.yaml`:
+
+| Node / parameter | Default | Meaning |
+|---|---|---|
+| `yolo_target_node.hand_raise_model` | `/home/hungdo/ros2_ws/yolov8n-pose.pt` | Local COCO-17 pose weights; no automatic download |
+| `yolo_target_node.hand_raise_hz` | `5.0` | Maximum gesture inference frequency |
+| `yolo_target_node.hand_raise_keypoint_confidence` | `0.5` | Minimum leg joint confidence |
+| `zone_guard.hand_raise_hold_s` | `1.0` | Continuous lifted-foot duration |
+| `zone_guard.hand_raise_max_gap_s` | `0.5` | Maximum sample age and interval |
+
+The local pose model must be present before testing. After changing the model
+path or replacing weights, restart the nodes. To inspect the request and samples:
+
+```bash
+ros2 topic echo /person_follow/confirm_requested
+ros2 topic echo /person_follow/hand_raise
+```
+
+`HandRaise` contains `header`, `track_id`, and `raised`; it is an observation,
+not a motion command. Keep the lifted foot and both legs inside the camera image.
+Rebuild and restart all package nodes after this interface change. Start with
+a stationary, motors-disabled camera trial before supervised navigation.
 
 ## Safety QA
 
@@ -271,61 +311,27 @@ gap can therefore pause physical movement without canceling and replanning the
 whole search goal. `reason=scan_gap_hold_goal` identifies this state on
 `/person_follow/recovery_status`.
 
-`yolo_target_node.identity_mode` selects one detector/identity per frame
-(`color_bands` default; unknown values log and fall back to `apriltag`).
-Only the selected mode runs its evidence detector; `color_bands` never scans
-tags and `apriltag` never scans color bands. Downstream `PersonTarget` /
-`PersonObservation`, metric association, Nav2, and zone guard are unchanged.
+`yolo_target_node` confirms identity only with AprilTag `tag36h11:0`; it has no
+selectable identity mode. Downstream `PersonTarget` / `PersonObservation`,
+metric association, Nav2, and zone guard are unchanged.
+
+AprilTag identity policy:
 
 1. YOLO detects people and the tracker assigns IDs.
-2. `color_bands`: OpenCV searches the lower `band_leg_roi_fraction` (0.5) of
-   each person bbox for red above blue on the same leg (horizontal centers
-   within `band_max_dx_ratio` of bbox width, vertical separation above
-   `band_min_sep_ratio` of leg ROI height, each component above
-   `band_min_area_px` and each color ratio below `band_max_color_ratio`).
-3. `color_bands`: exactly one person with valid ordered bands over
-   `band_confirm_frames` (3) consecutive frames locks that person.
-4. While the same track remains unambiguous, the band detector is skipped.
-   Turning away or covering the bands alone does not drop the target.
-5. Band search resumes for a missing track, a gap of 2 s or longer, abrupt
-   bbox discontinuity, or substantial person-bbox overlap (IoU >= 0.3).
-   Ambiguous or lost identity never falls back to the nearest person.
-6. After confirmed loss, a new tracker ID needs fresh three-frame band
-   confirmation before it can be accepted as the target. Metric association
-   preserves the `PersonTarget.identity_confirmed` flag for the Nav2 consumer.
-
-The combined image shows `bands=CONFIRM`, `bands=SKIP`, or `bands=SEARCH`.
-`bands=0` with a green TARGET and `bands=SKIP` is normal: the identity is already
-locked. Blue above red, a missing color, excessive horizontal separation, or a
-floor-sized color region does not select a target.
-
-Tuning (`config/person_follow.yaml`, `yolo_target_node`): start with the
-conservative HSV/geometry defaults (`band_leg_roi_fraction: 0.5`,
-`band_confirm_frames: 3`, `band_min_area_px: 100.0`,
-`band_max_color_ratio: 0.4`, `band_min_sep_ratio: 0.25`,
-`band_max_dx_ratio: 0.3`, red dual-hue `[0, 10]` + `[170, 179]` sat/val
-`70/50`, blue hue `[90, 130]` sat/val `70/50`) and adjust the HSV bounds and
-`band_min_area_px` for the actual camera lighting and band size first; widen
-`band_max_dx_ratio` only when both bands are confirmed on one leg but rejected
-for horizontal offset.
-
-Rollback (`apriltag` mode, behavior unchanged):
-
-1. While searching, OpenCV searches each person crop, enlarged up to 4x and
+2. While searching, OpenCV searches each person crop, enlarged up to 4x and
    capped at a 640-pixel longest side. Corners are mapped back to source pixels.
-2. One valid `tag36h11:0` inside exactly one person bbox locks that person
+3. One valid `tag36h11:0` inside exactly one person bbox locks that person
    immediately; three consecutive visible-tag frames are no longer required.
-3. While the same track remains unambiguous, the tag detector is skipped.
-4. Tag search resumes for a missing track, a gap of 2 s or longer, abrupt
+4. While the same track remains unambiguous, the tag detector is skipped.
+5. Tag search resumes for a missing track, a gap of 2 s or longer, abrupt
    bbox discontinuity, or substantial person-bbox overlap (IoU >= 0.3).
-5. The combined image shows `tag=CONFIRM`, `tag=SKIP`, or `tag=SEARCH`;
+6. The combined image shows `tag=CONFIRM`, `tag=SKIP`, or `tag=SEARCH`;
    `tags=0` with `tag=SKIP` while locked is normal. A tag inside two
    overlapping boxes, duplicated target tags, a wrong ID, or a tag outside
    person boxes does not select a target.
 
 ```bash
-ros2 launch robot_autonomous_yolo_slam_nav2 person_follow.launch.py \
-  use_slam:=false identity_mode:=apriltag
+ros2 launch robot_autonomous_yolo_slam_nav2 person_follow.launch.py use_slam:=false
 ```
 
 Missing CameraInfo, TF, or all geometry still prevents metric follow goals;

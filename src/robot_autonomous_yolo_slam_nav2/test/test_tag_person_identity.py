@@ -105,3 +105,15 @@ def test_two_second_absence_clears_identity_until_fresh_tag():
     assert relocked.state is TargetState.TRACKING
     assert relocked.target_observation == person()
     assert relocked.forward_motion_allowed
+
+
+def test_single_person_bbox_shift_retains_identity_without_tag():
+    selector = TagPersonIdentity(lost_timeout_s=2.0)
+    selector.update((person(),), (TrackId(7),), 1_000_000_000)
+    shifted = person(7, (220.0, 30.0, 320.0, 220.0))
+    assert selector.needs_confirmation((shifted,), 1_100_000_000)
+    result = selector.update((shifted,), (), 1_100_000_000)
+    assert result.state is TargetState.TRACKING
+    assert result.target_observation == shifted
+    assert result.forward_motion_allowed
+

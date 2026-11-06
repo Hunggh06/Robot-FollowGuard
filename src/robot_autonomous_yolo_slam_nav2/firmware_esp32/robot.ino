@@ -1,22 +1,7 @@
 // ============================================================
-// ESP32 + LDS02RR + MOTOR/ENCODER + WiFi micro-ROS  (v2.3)
-// v2.3: lower-control PID timing/filter tune based on v2.2.
-//
-// PHẦN LIDAR: parser chính thức kaiaai/LDS, target 5 Hz
-//   LDS02RR -> UART -> parser -> packet queue -> /telemetry
-//
-// PHẦN MOTOR: mới thêm
-//   SUB /motor/target_rpm  (Float32MultiArray: [left, right])
-//   PUB /motor/state       (Float32MultiArray: 8 phần tử)
-//        [0] target_left   [1] target_right
-//        [2] rpm_left      [3] rpm_right
-//        [4] encoder_left  [5] encoder_right
-//        [6] pwm_left      [7] pwm_right
-//
-// KHÔNG có /odom trên ESP32.
-//
-// v2: FF rieng 2 banh + breakaway boost chong ket de-pa.
-// v2.3: PID dt clamp, RPM filter response, and gentler startup kick.
+// ESP32 + LDS02RR + MOTOR/ENCODER + WiFi micro-ROS  (v2.3 Clean Fix)
+// - Trái: if (A == B) leftCount--; else leftCount++; (giữ nguyên)
+// - Phải: if (A == B) rightCount++; else rightCount--; (đã đảo lại)
 // ============================================================
 
 #include <Arduino.h>
@@ -31,15 +16,14 @@
 #include <rclc/executor.h>
 
 #include <kaiaai_msgs/msg/kaiaai_telemetry2.h>
-#include <std_msgs/msg/float32_multi_array.h>   // MOTOR: thêm mới
+#include <std_msgs/msg/float32_multi_array.h>
 
 #include <rmw_microros/rmw_microros.h>
 
 // ================= WIFI =================
-#define WIFI_SSID       "your_wifi"
-#define WIFI_PASSWORD   "your_wifi_password"
-#define AGENT_IP        "your_agent_ip"
-#define AGENT_PORT      8888
+// Copy wifi_credentials.example.h to wifi_credentials.h and fill in your values.
+#include "wifi_credentials.h"
+#define AGENT_PORT 8888
 
 // ================= LDS02RR =================
 HardwareSerial LIDAR(2);
@@ -56,7 +40,8 @@ HardwareSerial LIDAR(2);
 #define LIDAR_STARTUP_MS    1000UL
 
 // ================= TELEMETRY =================
-#define LDS_BUF_MAX         400
+#define LDS_PACKET_SIZE     22
+#define LDS_BUF_MAX         (LDS_PACKET_SIZE * 18)
 uint8_t  ldsBuf[LDS_BUF_MAX];
 uint16_t ldsSize = 0;
 uint32_t telemSeq = 0;
@@ -79,40 +64,36 @@ uint32_t lastStats          = 0;
 // ##  MOTOR + ENCODER
 // ############################################################
 
-#define IN1 22
-#define IN2 23
-#define ENA 32
-#define IN3 2
-#define IN4 4
-#define ENB 33
+#define IN1 2
+#define IN2 4
+#define ENA 33
+#define IN3 22
+#define IN4 23
+#define ENB 32
 
-#define ENC_L_A 27
-#define ENC_L_B 14
-#define ENC_R_A 26
-#define ENC_R_B 25
+#define ENC_L_A 26
+#define ENC_L_B 25
+#define ENC_R_A 27
+#define ENC_R_B 14
 
-// Kênh LEDC cố định 4,5 (timer 2) -> không đụng timer PWM LiDAR (kênh thấp, timer 0)
 #define MOTOR_PWM_FREQ   1000
 #define MOTOR_PWM_RES    8
 #define MOTOR_PWM_CH_L   4
 #define MOTOR_PWM_CH_R   5
 #define MAX_PWM          255
 
-#define ENCODER_TPR       227.0f   // do tay 4 lan: 222/225/227/228 (234 thieu ~3%)
+#define ENCODER_TPR       227.0f
 #define WHEEL_DIAMETER_MM 65.0f
 
-#define SWAP_MOTOR_SIDES true
+float KpLeft  = 0.85f, KiLeft  = 1.00f, KdLeft  = 0.03f;
+float KpRight = 0.85f, KiRight = 1.00f, KdRight = 0.03f;
 
-float KpLeft  = 1.9f, KiLeft  = 2.3f, KdLeft  = 0.0f;
-float KpRight = 1.9f, KiRight = 2.3f, KdRight = 0.0f;
+#define PID_PERIOD_MS     25
+#define INTEGRAL_LIMIT    120.0f
+#define RPM_FILTER_ALPHA  0.50f
+#define MOTOR_DEADZONE    28
+#define MOTOR_FF_GAIN     0.50f
 
-#define PID_PERIOD_MS     100
-#define INTEGRAL_LIMIT    300.0f
-#define RPM_FILTER_ALPHA  0.25f
-#define MOTOR_DEADZONE    0
-#define MOTOR_FF_GAIN     0.0f
-
-// Quá thời gian này không có /motor/target_rpm -> tự dừng. 0 = tắt.
 #define CMD_TIMEOUT_MS    1000UL
 #define STATE_PERIOD_MS   100
 
@@ -123,7 +104,8 @@ std_msgs__msg__Float32MultiArray state_msg;
 std_msgs__msg__Float32MultiArray target_msg;
 
 float stateBuf[8];
-float targetBuf[2];
+#define TARGET_BUF_MAX      8
+float targetBuf[TARGET_BUF_MAX];
 std_msgs__msg__MultiArrayDimension targetDimBuf[1];
 char  targetDimLabel[16];
 
@@ -142,18 +124,20 @@ unsigned long lastPIDTime = 0;
 long previousLeftCount = 0, previousRightCount = 0;
 unsigned long lastCmdMs = 0, lastStateMs = 0;
 
+// TRÁI: Giữ nguyên (đã khỏi)
 void IRAM_ATTR leftEncoderISR()
 {
     bool A = digitalRead(ENC_L_A);
     bool B = digitalRead(ENC_L_B);
-    if (A == B) leftCount++; else leftCount--;
+    if (A == B) leftCount--; else leftCount++;
 }
 
+// PHẢI: Đảo lại thành ++ / --
 void IRAM_ATTR rightEncoderISR()
 {
     bool A = digitalRead(ENC_R_A);
     bool B = digitalRead(ENC_R_B);
-    if (A == B) rightCount--; else rightCount++;
+    if (A == B) rightCount++; else rightCount--;
 }
 
 void setLeftMotor(float pwm)
@@ -198,6 +182,7 @@ void stopMotors()
     setRightMotor(0);
     pwmLeft = pwmRight = 0;
     targetRPMLeft = targetRPMRight = 0;
+    rpmLeftFiltered = rpmRightFiltered = 0;
     resetPID();
 }
 
@@ -209,11 +194,7 @@ void calculateRPM(float dt)
     pr = rightCount;
     interrupts();
 
-#if SWAP_MOTOR_SIDES
-    long currentLeft = pr, currentRight = pl;
-#else
     long currentLeft = pl, currentRight = pr;
-#endif
 
     long deltaLeft  = currentLeft  - previousLeftCount;
     long deltaRight = currentRight - previousRightCount;
@@ -255,6 +236,9 @@ float calculatePIDLeft(float dt)
     if (output > 0) output += MOTOR_DEADZONE;
     else if (output < 0) output -= MOTOR_DEADZONE;
 
+    if (targetRPMLeft > 0.0f && output < 0.0f) output = 0.0f;
+    if (targetRPMLeft < 0.0f && output > 0.0f) output = 0.0f;
+
     return constrain(output, -MAX_PWM, MAX_PWM);
 }
 
@@ -284,6 +268,9 @@ float calculatePIDRight(float dt)
     if (output > 0) output += MOTOR_DEADZONE;
     else if (output < 0) output -= MOTOR_DEADZONE;
 
+    if (targetRPMRight > 0.0f && output < 0.0f) output = 0.0f;
+    if (targetRPMRight < 0.0f && output > 0.0f) output = 0.0f;
+
     return constrain(output, -MAX_PWM, MAX_PWM);
 }
 
@@ -294,7 +281,7 @@ void updateMotorPID()
 
     float dt = (now - lastPIDTime) / 1000.0f;
     lastPIDTime = now;
-    if (dt <= 0.001f) dt = 0.1f;
+    if (dt <= 0.001f || dt > 0.25f) dt = (float)PID_PERIOD_MS / 1000.0f;
 
 #if CMD_TIMEOUT_MS > 0
     if (now - lastCmdMs > CMD_TIMEOUT_MS &&
@@ -302,26 +289,37 @@ void updateMotorPID()
     {
         Serial.println("[MOTOR] cmd timeout -> STOP");
         stopMotors();
+        calculateRPM(dt);
+        return;
     }
 #endif
 
-    calculateRPM(dt);   // luôn cập nhật để /motor/state đúng khi đứng yên
+    calculateRPM(dt);
 
     if (fabs(targetRPMLeft) < 0.1f && fabs(targetRPMRight) < 0.1f) {
         stopMotors();
         return;
     }
 
-    pwmLeft  = calculatePIDLeft(dt);
-    pwmRight = calculatePIDRight(dt);
+    if (fabs(targetRPMLeft) < 0.1f) {
+        integralLeft = 0;
+        previousErrorLeft = 0;
+        pwmLeft = 0;
+        setLeftMotor(0);
+    } else {
+        pwmLeft = calculatePIDLeft(dt);
+        setLeftMotor(pwmLeft);
+    }
 
-#if SWAP_MOTOR_SIDES
-    setLeftMotor(pwmRight);
-    setRightMotor(pwmLeft);
-#else
-    setLeftMotor(pwmLeft);
-    setRightMotor(pwmRight);
-#endif
+    if (fabs(targetRPMRight) < 0.1f) {
+        integralRight = 0;
+        previousErrorRight = 0;
+        pwmRight = 0;
+        setRightMotor(0);
+    } else {
+        pwmRight = calculatePIDRight(dt);
+        setRightMotor(pwmRight);
+    }
 }
 
 // ---- SUB /motor/target_rpm ----
@@ -335,6 +333,15 @@ void targetCallback(const void * msgin)
     float l = m->data.data[0];
     float r = m->data.data[1];
     if (isnan(l) || isnan(r)) return;
+
+    if (l * targetRPMLeft <= 0.0f) {
+        integralLeft = 0;
+        previousErrorLeft = 0;
+    }
+    if (r * targetRPMRight <= 0.0f) {
+        integralRight = 0;
+        previousErrorRight = 0;
+    }
 
     targetRPMLeft  = l;
     targetRPMRight = r;
@@ -356,11 +363,7 @@ void publishMotorState()
     pR = rightCount;
     interrupts();
 
-#if SWAP_MOTOR_SIDES
-    long encL = pR, encR = pL;
-#else
     long encL = pL, encR = pR;
-#endif
 
     stateBuf[0] = targetRPMLeft;
     stateBuf[1] = targetRPMRight;
@@ -420,7 +423,7 @@ void initMotorMessages()
 
     target_msg.data.data     = targetBuf;
     target_msg.data.size     = 0;
-    target_msg.data.capacity = 2;
+    target_msg.data.capacity = TARGET_BUF_MAX;
 }
 
 // ============================================================
@@ -484,7 +487,6 @@ bool setupMicroROS()
         return false;
     }
 
-    // Sensor chunks are time-sensitive; do not block the LDS parser on ACKs.
     if (rclc_publisher_init_best_effort(
             &telem_pub, &node,
             ROSIDL_GET_MSG_TYPE_SUPPORT(kaiaai_msgs, msg, KaiaaiTelemetry2),
@@ -494,7 +496,6 @@ bool setupMicroROS()
         return false;
     }
 
-    // ---- MOTOR: /motor/state ----
     initMotorMessages();
 
     if (rclc_publisher_init_best_effort(
@@ -506,7 +507,6 @@ bool setupMicroROS()
         return false;
     }
 
-    // ---- MOTOR: /motor/target_rpm ----
     if (rclc_subscription_init_best_effort(
             &target_sub, &node,
             ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32MultiArray),
@@ -516,7 +516,6 @@ bool setupMicroROS()
         return false;
     }
 
-    // Executor: 1 handle (subscription)
     if (rclc_executor_init(&executor, &support.context, 1, &allocator) != RCL_RET_OK)
     {
         Serial.println("[ROS] executor FAILED");
@@ -528,12 +527,6 @@ bool setupMicroROS()
             &targetCallback, ON_NEW_DATA) != RCL_RET_OK)
     {
         Serial.println("[ROS] executor add sub FAILED");
-        return false;
-    }
-
-    if (!kaiaai_msgs__msg__KaiaaiTelemetry2__init(&telem_msg))
-    {
-        Serial.println("[ROS] message init FAILED");
         return false;
     }
 
@@ -557,7 +550,7 @@ void setupLidar()
     delay(LIDAR_STARTUP_MS);
     ledcWrite(LIDAR_MOT_EN, LIDAR_PWM_DUTY);
 
-    LIDAR.setRxBufferSize(16384);  // must be before begin()
+    LIDAR.setRxBufferSize(16384);
     LIDAR.begin(LIDAR_BAUD, SERIAL_8N1, LIDAR_RX, LIDAR_TX);
 
     Serial.println("[LDS] UART ready");
@@ -568,8 +561,14 @@ void setupLidar()
 // ============================================================
 void publishTelemetry()
 {
-    if (!rosReady || ldsSize == 0)
+    if (ldsSize == 0)
         return;
+
+    if (!rosReady)
+    {
+        ldsSize = 0;
+        return;
+    }
 
     memset(&telem_msg, 0, sizeof(telem_msg));
 
@@ -587,7 +586,6 @@ void publishTelemetry()
     telem_msg.lds.capacity = LDS_BUF_MAX;
 
     telem_msg.wifi_rssi_dbm = (int8_t)WiFi.RSSI();
-
     telem_msg.battery_mv = 0;
     telem_msg.scan_start_hint = false;
 
@@ -611,16 +609,14 @@ void publishTelemetry()
     {
         totalPublishError++;
         Serial.print("[ROS][ERROR] rc=");
-        Serial.print(rc);
-        Serial.println();
-        return;
+        Serial.println(rc);
     }
 
     ldsSize = 0;
 }
 
 // ============================================================
-// READ LDS02RR - nơi DUY NHẤT gọi LIDAR.read()
+// READ LDS02RR
 // ============================================================
 void processLidar()
 {
@@ -678,10 +674,8 @@ void setup()
     Serial.println();
     Serial.println("================================");
     Serial.println(" LDS02RR + MOTOR + WIFI + MICRO-ROS");
-    Serial.println(" LDS PARSER + RAW TELEMETRY + /motor/*");
     Serial.println("================================");
 
-    // Motor: đưa chân về trạng thái dừng sớm nhất
     setupMotors();
     setupEncoders();
     lastPIDTime = millis();
@@ -711,12 +705,11 @@ void setup()
 void loop()
 {
     processLidar();
-    publishTelemetry();
 
     if (rosReady)
         rclc_executor_spin_some(&executor, RCL_MS_TO_NS(1));
 
-    updateMotorPID();      // PID 100 ms + watchdog lệnh
+    updateMotorPID();      // PID 25 ms + watchdog lệnh
     publishMotorState();   // /motor/state 10 Hz
 
     printStatistics();

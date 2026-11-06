@@ -42,9 +42,17 @@ from .metric_target_ros import (
     stamp_ns,
     target_fields,
 )
+from .target_kalman_filter import CameraFusionInputs
 
 if TYPE_CHECKING:
     from .metric_target_runtime import MetricTargetRuntime
+
+
+def _reset_tracking_state(host: MetricTargetRuntime) -> None:
+    host._cache.reset()
+    kalman = getattr(host, "_kalman", None)
+    if kalman is not None:
+        kalman.reset()
 
 
 def publish_invalid_and_empty(
@@ -104,7 +112,7 @@ def run_cycle(host: MetricTargetRuntime) -> None:
         publish_invalid_and_empty(host, None, Header(), "missing_input")
         return
     if not target.valid or not target.identity_confirmed:
-        host._cache.reset()
+        _reset_tracking_state(host)
         publish_invalid_and_empty(host, target, target.header, "visual_target_unconfirmed")
         return
     now_ns = host.get_clock().now().nanoseconds
@@ -133,7 +141,7 @@ def run_cycle(host: MetricTargetRuntime) -> None:
         target.header.frame_id != camera_frame
         or camera_info.header.frame_id != camera_frame
     ):
-        host._cache.reset()
+        _reset_tracking_state(host)
         publish_invalid_and_empty(host, target, target.header, "frame_mismatch")
         return
 
@@ -151,7 +159,7 @@ def run_cycle(host: MetricTargetRuntime) -> None:
     if not any(
         message.valid and message.track_id == target.track_id for message in fresh
     ):
-        host._cache.reset()
+        _reset_tracking_state(host)
         publish_invalid_and_empty(
             host, target, target.header,
             f"no_fresh_obs track={target.track_id} obs={len(fresh)}")
@@ -161,7 +169,7 @@ def run_cycle(host: MetricTargetRuntime) -> None:
         tuple(observation_fields(message) for message in fresh),
     )
     if selection is None:
-        host._cache.reset()
+        _reset_tracking_state(host)
         publish_invalid_and_empty(host, target, target.header, "selection_empty")
         return
 
@@ -181,17 +189,48 @@ def run_cycle(host: MetricTargetRuntime) -> None:
     if scan is not None and usable_stamp is not None:
         laser_transform = host._lookup_laser_to_base(scan)
         if laser_transform is not None:
+            parsed_scan = scan_fields(scan)
             lidar_inputs = LidarInputs(
                 points=laser_scan_to_lidar_points(
-                    scan_fields(scan), laser_transform),
+                    parsed_scan, laser_transform),
                 calibration=parsed_info.calibration,
                 camera_transform=camera_transform,
                 image_size=parsed_info.image_size,
                 stamp_ns=usable_stamp,
                 position_confidence=float(
                     str(host.get_parameter("lidar_position_confidence").value)),
+                scan=parsed_scan,
+                laser_transform=laser_transform,
             )
-    decision = decide_branch(selection, lidar_inputs)
+
+    camera_inputs: CameraFusionInputs | None = None
+    if selection.target_observation is not None:
+        camera_inputs = CameraFusionInputs(
+            track_id=int(target.track_id),
+            bbox=selection.target_observation.bbox,
+            confidence=float(target.confidence),
+            calibration=parsed_info.calibration,
+            camera_transform=camera_transform,
+            image_size=parsed_info.image_size,
+            stamp_ns=target_stamp_ns,
+            footpoint_valid=bool(getattr(target, "footpoint_valid", False)),
+            footpoint_x=float(getattr(target, "footpoint_x", 0.0)),
+            footpoint_y=float(getattr(target, "footpoint_y", 0.0)),
+            footpoint_confidence=float(getattr(target, "footpoint_confidence", 0.0)),
+        )
+
+    use_kf = (
+        bool(host.get_parameter("use_kalman_fusion").value)
+        if host.has_parameter("use_kalman_fusion")
+        else True
+    )
+    kalman = getattr(host, "_kalman", None) if use_kf else None
+    decision = decide_branch(
+        selection,
+        lidar_inputs,
+        kalman_filter=kalman,
+        camera=camera_inputs,
+    )
     if lidar_inputs is not None and scan is not None:
         host._obstacles_pub.publish(empty_obstacle_cloud(
             scan.header, host._base_frame(), decision.obstacles))

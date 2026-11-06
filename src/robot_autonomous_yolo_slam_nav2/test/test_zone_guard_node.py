@@ -53,18 +53,14 @@ def test_extra_clicks_ignored_after_latch() -> None:
         rclpy.shutdown()
 
 
-def test_confirm_sets_pending_flag() -> None:
+def test_confirm_uses_gesture_subscription_instead_of_voice() -> None:
     import rclpy
-    from std_msgs.msg import String
 
     node = _make_node()
     try:
-        node._confirm_callback(String(data="ok xác nhận nhé"))
-        assert node._confirm_pending is True
-        assert node._consume_confirm() is True
-        assert node._confirm_pending is False
-        node._confirm_callback(String(data="đi tiếp đi"))
-        assert node._confirm_pending is False
+        topics = {subscription.topic_name for subscription in node.subscriptions}
+        assert "/person_follow/hand_raise" in topics
+        assert "/phone/speech_text" not in topics
     finally:
         node.destroy_node()
         rclpy.shutdown()
@@ -262,34 +258,30 @@ def test_verify_cap_enters_hold_without_twist() -> None:
         rclpy.shutdown()
 
 
-def test_confirm_ignored_right_after_robot_speaks() -> None:
+def test_gesture_is_ignored_before_confirmation_window() -> None:
     import rclpy
-    from std_msgs.msg import String
+    from robot_autonomous_yolo_slam_nav2.msg import HandRaise, PersonTarget
 
     node = _make_node()
     try:
         now_ns = node.get_clock().now().nanoseconds
-        node._last_say_ns = now_ns
-        node._confirm_callback(String(data="xác nhận"))
-        assert node._confirm_pending is False
-        node._last_say_ns = now_ns - 10_000_000_000
-        node._confirm_callback(String(data="xác nhận"))
-        assert node._confirm_pending is True
+        target = PersonTarget(track_id=7, valid=True, identity_confirmed=True, state="tracking")
+        target.header.stamp = node.get_clock().now().to_msg()
+        node._target_callback(target)
+        message = HandRaise(header=target.header, track_id=7, raised=True)
+        node._hand_confirm.receive(message)
+        assert node._hand_confirm._hold._last_ns == 0
+        node._hand_confirm.set_waiting(True, now_ns - 1)
+        node._hand_confirm.receive(message)
+        assert node._hand_confirm._hold._last_ns >= now_ns
     finally:
         node.destroy_node()
         rclpy.shutdown()
 
 
-def test_confirm_ignores_own_question_echo() -> None:
-    """The robot must not confirm itself by hearing its own question.
-
-    The ASK sentence itself contains the keyword, and its echo can arrive
-    after the fixed ignore window (TTS speech + STT latency), so a
-    prompt-echo filter must drop it while still accepting a short user
-    confirmation spoken at the same delay.
-    """
+def test_speaker_prompt_does_not_block_visual_confirmation() -> None:
     import rclpy
-    from std_msgs.msg import String
+    from robot_autonomous_yolo_slam_nav2.msg import HandRaise, PersonTarget
 
     node = _make_node()
     try:
@@ -298,15 +290,13 @@ def test_confirm_ignores_own_question_echo() -> None:
         )
 
         now_ns = node.get_clock().now().nanoseconds
-        node._last_say_ns = now_ns - 10_000_000_000
-        node._last_say_text = SAY_ASK_CONFIRM
-        node._recent_say = [(SAY_ASK_CONFIRM, now_ns - 10_000_000_000)]
-
-        node._confirm_callback(String(data=SAY_ASK_CONFIRM))
-        assert node._confirm_pending is False
-
-        node._confirm_callback(String(data="xác nhận"))
-        assert node._confirm_pending is True
+        node._say(SAY_ASK_CONFIRM)
+        target = PersonTarget(track_id=7, valid=True, identity_confirmed=True, state="tracking")
+        target.header.stamp = node.get_clock().now().to_msg()
+        node._target_callback(target)
+        node._hand_confirm.set_waiting(True, now_ns - 1)
+        node._hand_confirm.receive(HandRaise(header=target.header, track_id=7, raised=True))
+        assert node._hand_confirm._hold._last_ns >= now_ns
     finally:
         node.destroy_node()
         rclpy.shutdown()
@@ -315,19 +305,27 @@ def test_confirm_ignores_own_question_echo() -> None:
 def test_stale_confirm_expires_before_switching_mode() -> None:
     """A past confirmation must not auto-switch mode on a later violation."""
     import rclpy
+    from robot_autonomous_yolo_slam_nav2.hand_raise_logic import GestureSample
+    from robot_autonomous_yolo_slam_nav2.msg import PersonTarget
+    from robot_autonomous_yolo_slam_nav2.target_state import TrackId
 
     node = _make_node()
     try:
         now_ns = node.get_clock().now().nanoseconds
-        node._confirm_pending = True
-        node._confirm_ns = now_ns - 60_000_000_000
+        node._phase = "WAIT_CONFIRM"
+        target = PersonTarget(track_id=7, valid=True, identity_confirmed=True, state="tracking")
+        target.header.stamp = node.get_clock().now().to_msg()
+        node._target_callback(target)
+        node._hand_confirm.set_waiting(True, now_ns - 65_000_000_000)
+        for offset in (61_000_000_000, 60_500_000_000, 60_000_000_000):
+            stamp = now_ns - offset
+            node._hand_confirm._hold.update(GestureSample(TrackId(7), stamp, True), stamp)
         assert node._consume_confirm() is False
-        assert node._confirm_pending is False
-
-        node._confirm_pending = True
-        node._confirm_ns = now_ns
+        for offset in (1_000_000_000, 500_000_000, 0):
+            stamp = now_ns - offset
+            node._hand_confirm._hold.update(GestureSample(TrackId(7), stamp, True), stamp)
         assert node._consume_confirm() is True
-        assert node._confirm_pending is False
+        assert node._consume_confirm() is False
     finally:
         node.destroy_node()
         rclpy.shutdown()
@@ -368,7 +366,7 @@ def test_reset_during_active_guide_cancels_all_and_idles() -> None:
         node._guide_succeeded = False
         node._guide_fails = 0
         node._guide_poly = node._polygon
-        node._confirm_pending = True
+        node._hand_confirm.set_waiting(True, node.get_clock().now().nanoseconds)
 
         cancelled = []
 
@@ -412,7 +410,7 @@ def test_reset_during_active_guide_cancels_all_and_idles() -> None:
         assert node._guide_succeeded is False
         assert node._guide_fails == 0
         assert node._guide_poly is None
-        assert node._confirm_pending is False
+        assert node._hand_confirm._waiting is False
         assert "guide" in cancelled
         assert "verify" in cancelled
         assert node._saved_max_vel_x is None

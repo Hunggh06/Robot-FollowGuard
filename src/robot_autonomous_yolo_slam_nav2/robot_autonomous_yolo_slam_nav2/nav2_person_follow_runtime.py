@@ -28,8 +28,10 @@ from robot_autonomous_yolo_slam_nav2.msg import PersonObservation, PersonTarget
 from .follow_goal_helpers import (
     CancelGrace,
     FollowConfig,
+    FollowDecisionStatus,
     ObstaclePoint,
     TargetGeometry,
+    decide_face_goal,
     decide_follow_goal,
     estimate_person_speed,
     grace_advance,
@@ -73,6 +75,8 @@ class Nav2PersonFollowRuntime(Nav2PersonFollowActions, Nav2PersonFollowSpinActio
         self._scan_stamp_ns = 0
         self._confirmed_track_id: int | None = None
         self._close_latched = False
+        self._last_face_yaw_rad: float | None = None
+        self._last_face_send_ns = 0
         self._cancel_grace = CancelGrace()
         self._last_seen_bearing_rad: float | None = None
         self._last_seen_range_m = 0.0
@@ -153,6 +157,9 @@ class Nav2PersonFollowRuntime(Nav2PersonFollowActions, Nav2PersonFollowSpinActio
         self.declare_parameter("corridor_half_width_m", 0.22)
         self.declare_parameter("goal_update_distance_m", 0.1)
         self.declare_parameter("goal_update_yaw_rad", 0.1)
+        self.declare_parameter("face_target_in_standoff", True)
+        self.declare_parameter("face_update_yaw_rad", 0.35)
+        self.declare_parameter("face_update_period_s", 0.5)
         self.declare_parameter("publish_period_s", 0.1)
         self.declare_parameter("tf_timeout_s", 0.1)
         self.declare_parameter("max_obstacle_points", 10000)
@@ -298,12 +305,22 @@ class Nav2PersonFollowRuntime(Nav2PersonFollowActions, Nav2PersonFollowSpinActio
             fresh_range = target_geometry.range_m
         self._close_latched, close_action = update_close_latch(
             self._close_latched, fresh_range, follow_config)
-        if close_action == "cancel_now":
-            self._cancel_grace = CancelGrace()
-            self._request_cancel("target_inside_follow_distance")
+        if close_action in ("cancel_now", "hold"):
+            if close_action == "cancel_now":
+                self._cancel_grace = CancelGrace()
+            if follow_config.face_target_in_standoff and self._standoff_target_fresh(
+                target, target_geometry, follow_config
+            ):
+                assert target is not None
+                assert target_geometry is not None
+                self._face_standoff_target(now_ns, target, target_geometry, follow_config)
+                return
+            if close_action == "cancel_now":
+                self._request_cancel("target_inside_follow_distance")
+            self._publish_status("following", "following_standoff_hold")
             return
-        if close_action == "hold":
-            return
+        self._last_face_yaw_rad = None
+        self._last_face_send_ns = 0
         if target is None or target_geometry is None:
             self._request_cancel_graced("target_missing")
             return
@@ -320,6 +337,49 @@ class Nav2PersonFollowRuntime(Nav2PersonFollowActions, Nav2PersonFollowSpinActio
         )
         self._apply_decision(decision, target.header.stamp)
         self._publish_status("following", "following_confirmed_target")
+
+    def _standoff_target_fresh(
+        self,
+        target: PersonTarget | None,
+        target_geometry: TargetGeometry | None,
+        config: FollowConfig,
+    ) -> bool:
+        """True when a confirmed, fresh, geometrically valid target is present."""
+        return (
+            target is not None
+            and target_geometry is not None
+            and target_geometry.valid
+            and target_geometry.state == "tracking"
+            and 0.0 <= target_geometry.age_s <= config.max_target_age_s
+            and math.isfinite(target_geometry.bearing_rad)
+        )
+
+    def _face_standoff_target(
+        self,
+        now_ns: int,
+        target: PersonTarget,
+        target_geometry: TargetGeometry,
+        config: FollowConfig,
+    ) -> None:
+        """Send or throttle a same-position face goal while inside the stand-off."""
+        since_s: float | None = None
+        if self._last_face_send_ns:
+            since_s = (now_ns - self._last_face_send_ns) / 1_000_000_000.0
+        decision = decide_face_goal(
+            target_geometry, config, self._last_face_yaw_rad, since_s
+        )
+        if decision.status is not FollowDecisionStatus.GOAL:
+            self._publish_status("following", "following_face_hold")
+            return
+        if self._transform_goal(
+            (0.0, 0.0), target_geometry.bearing_rad, target.header.stamp
+        ) is None:
+            self._publish_status("following", "following_face_retry")
+            return
+        self._last_face_yaw_rad = target_geometry.bearing_rad
+        self._last_face_send_ns = now_ns
+        self._apply_decision(decision, target.header.stamp)
+        self._publish_status("following", "following_face_standoff")
 
     def _inspect_people(self, now_ns: int) -> bool:
         """Hold the spin while fresh people may still confirm the tag.
@@ -508,6 +568,8 @@ class Nav2PersonFollowRuntime(Nav2PersonFollowActions, Nav2PersonFollowSpinActio
             self._request_cancel(reason)
 
     def _on_nav2_result(self, succeeded: bool, mode: GoalMode | None, token: str | None = None) -> None:
+        if not succeeded and mode == "follow":
+            self._last_face_yaw_rad = None
         return None
 
     def _target_geometry(self, target: PersonTarget, now_ns: int) -> TargetGeometry:
@@ -547,6 +609,9 @@ class Nav2PersonFollowRuntime(Nav2PersonFollowActions, Nav2PersonFollowSpinActio
             corridor_half_width_m=self._float_parameter("corridor_half_width_m"),
             goal_update_distance_m=self._float_parameter("goal_update_distance_m"),
             base_frame=str(self.get_parameter("base_frame").value),
+            face_target_in_standoff=bool(self.get_parameter("face_target_in_standoff").value),
+            face_update_yaw_rad=self._float_parameter("face_update_yaw_rad"),
+            face_update_period_s=self._float_parameter("face_update_period_s"),
         )
 
     def _float_parameter(self, name: str) -> float:

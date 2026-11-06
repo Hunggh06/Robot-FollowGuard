@@ -5,40 +5,16 @@ from __future__ import annotations
 import math
 from typing import cast
 
-from builtin_interfaces.msg import Time as MessageTime
 from geometry_msgs.msg import PoseStamped
 from rclpy.time import Time
 from sensor_msgs.msg import LaserScan, PointCloud2
 from sensor_msgs_py.point_cloud2 import read_points
-from nav_msgs.msg import OccupancyGrid
 from tf2_ros import Buffer
 from tf2_geometry_msgs import do_transform_pose
 
 from robot_autonomous_yolo_slam_nav2.msg import PersonTarget
 
 from .safety_gate_logic import scan_to_base_points
-from .map_recovery_logic import MapGrid
-
-
-def occupancy_grid_snapshot(message: OccupancyGrid) -> MapGrid:
-    """Parse a ROS occupancy grid into the immutable map geometry boundary."""
-    orientation = message.info.origin.orientation
-    yaw = math.atan2(
-        2.0 * (orientation.w * orientation.z + orientation.x * orientation.y),
-        1.0 - 2.0 * (orientation.y * orientation.y + orientation.z * orientation.z),
-    )
-    stamp = message.header.stamp
-    return MapGrid(
-        frame_id=str(message.header.frame_id),
-        stamp_s=float(stamp.sec) + float(stamp.nanosec) / 1_000_000_000.0,
-        resolution_m=float(message.info.resolution),
-        width=int(message.info.width),
-        height=int(message.info.height),
-        origin_x=float(message.info.origin.position.x),
-        origin_y=float(message.info.origin.position.y),
-        origin_yaw_rad=yaw,
-        data=tuple(int(value) for value in message.data),
-    )
 
 
 def stamp_ns(message: LaserScan | PointCloud2) -> int:
@@ -97,27 +73,6 @@ def target_map_point(tf_buffer: Buffer, target: PersonTarget, base_frame: str, m
     except Exception:  # noqa: BLE001
         return None
     return float(transformed.pose.position.x), float(transformed.pose.position.y)
-
-
-def map_goal_to_base(tf_buffer: Buffer, goal: tuple[float, float, float], map_frame: str, base_frame: str, stamp: MessageTime) -> tuple[float, float, float] | None:
-    source = PoseStamped()
-    source.header.frame_id = map_frame
-    source.header.stamp = stamp
-    source.pose.position.x, source.pose.position.y = goal[0], goal[1]
-    source.pose.orientation.z = math.sin(goal[2] / 2.0)
-    source.pose.orientation.w = math.cos(goal[2] / 2.0)
-    try:
-        transform = tf_buffer.lookup_transform(
-            base_frame,
-            source.header.frame_id,
-            Time.from_msg(source.header.stamp),
-        )
-        transformed = cast(PoseStamped, PoseStamped(pose=do_transform_pose(source.pose, transform)))
-    except Exception:  # noqa: BLE001
-        return None
-    rotation = transformed.pose.orientation
-    yaw = math.atan2(2.0 * rotation.w * rotation.z, 1.0 - 2.0 * rotation.z * rotation.z)
-    return float(transformed.pose.position.x), float(transformed.pose.position.y), yaw
 
 
 def parse_obstacle_cloud(cloud: PointCloud2 | None, now_ns: int, max_age_s: float, base_frame: str, max_points: int) -> tuple[tuple[float, float, float], ...] | None:

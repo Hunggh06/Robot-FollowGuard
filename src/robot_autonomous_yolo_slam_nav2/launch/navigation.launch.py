@@ -46,7 +46,8 @@ def generate_launch_description():
               parameters=[{'use_sim_time': False}]),
         Node(package='robot_autonomous_yolo_slam_nav2', executable='safety_gate_node.py',
              name='safety_gate', output='screen',
-             parameters=[{
+             parameters=[os.path.join(pkg, 'config', 'person_follow.yaml'),
+                         {
                  'input_topic': '/cmd_vel',
                  'output_topic': '/cmd_vel_safe',
                  'scan_topic': '/scan',

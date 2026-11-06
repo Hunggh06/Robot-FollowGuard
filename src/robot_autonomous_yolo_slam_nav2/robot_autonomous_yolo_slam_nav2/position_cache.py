@@ -55,7 +55,7 @@ class PositionCache:
             or range_m <= 0.0
             or not math.isfinite(confidence)
             or not 0.0 <= confidence <= 1.0
-            or source not in ("lidar", "camera")
+            or source not in ("lidar", "camera", "fused")
         ):
             return
         self._held = HeldPosition(

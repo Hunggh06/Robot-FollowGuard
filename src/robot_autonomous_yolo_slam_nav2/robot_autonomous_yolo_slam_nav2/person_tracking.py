@@ -16,7 +16,31 @@ from __future__ import annotations
 import math
 
 import numpy as np
-from scipy.optimize import linear_sum_assignment
+
+try:
+    from scipy.optimize import linear_sum_assignment
+except ImportError:  # pragma: no cover - fallback when scipy is absent
+    def linear_sum_assignment(cost_matrix: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        rows_count, cols_count = cost_matrix.shape
+        used_rows: set[int] = set()
+        used_cols: set[int] = set()
+        pairs = sorted(
+            (
+                (float(cost_matrix[r, c]), r, c)
+                for r in range(rows_count)
+                for c in range(cols_count)
+            ),
+            key=lambda item: item[0],
+        )
+        sel_rows: list[int] = []
+        sel_cols: list[int] = []
+        for _val, r, c in pairs:
+            if r not in used_rows and c not in used_cols:
+                used_rows.add(r)
+                used_cols.add(c)
+                sel_rows.append(r)
+                sel_cols.append(c)
+        return np.array(sel_rows, dtype=int), np.array(sel_cols, dtype=int)
 
 _LARGE_COST = 1e9
 

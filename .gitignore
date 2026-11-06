@@ -55,6 +55,7 @@ maps/
 
 # Local ESP32 network credentials. Copy the example and fill it locally.
 firmware/wifi_credentials.h
+src/robot_autonomous_yolo_slam_nav2/firmware_esp32/wifi_credentials.h
 
 # Raw calibration captures are reproducible; keep only the solved YAML.
 src/robot_autonomous_yolo_slam_nav2/calibration/images/

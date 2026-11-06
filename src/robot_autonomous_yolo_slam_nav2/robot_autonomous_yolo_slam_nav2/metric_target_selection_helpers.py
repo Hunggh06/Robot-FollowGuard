@@ -7,7 +7,7 @@ from collections.abc import Sequence
 from typing import TypeAlias, TypeVar
 
 from .metric_association import MetricPersonObstacle, Point3D
-from .reid_target_helpers import PersonObservationFields, PersonTargetFields
+from .person_message_fields import PersonObservationFields, PersonTargetFields
 from .target_state import TargetSelectionResult, TargetState, TrackId, TrackObservation
 
 

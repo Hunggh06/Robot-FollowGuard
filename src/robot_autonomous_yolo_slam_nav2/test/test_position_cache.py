@@ -58,3 +58,15 @@ def test_reset_clears_cache() -> None:
     )
     cache.reset()
     assert cache.held(track_id=3, now_ns=2_000_000_000) is None
+
+
+def test_accepts_fused_source() -> None:
+    cache = PositionCache(hold_timeout_s=5.0, decay_per_s=0.05)
+    cache.update(
+        track_id=5, point=(1.8, 0.1, 0.0), range_m=1.8027756,
+        bearing_rad=0.0554985, stamp_ns=1_000_000_000,
+        source="fused", confidence=0.92, provenance="kalman_fused_lidar_bbox+camera_bbox_wh",
+    )
+    held = cache.held(track_id=5, now_ns=1_500_000_000)
+    assert held is not None
+    assert held.source == "fused"

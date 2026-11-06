@@ -44,7 +44,8 @@ def generate_launch_description():
               parameters=[{'use_sim_time': False}]),
         Node(package='robot_autonomous_yolo_slam_nav2', executable='safety_gate_node.py',
              name='safety_gate', output='screen',
-             parameters=[{
+             parameters=[os.path.join(pkg, 'config', 'person_follow.yaml'),
+                         {
                  'input_topic': '/cmd_vel',
                  'output_topic': '/cmd_vel_safe',
                  'scan_topic': '/scan',
@@ -81,6 +82,13 @@ def generate_launch_description():
                 'use_sim_time': 'false',
                 'autostart': 'True',
             }.items()),
+        Node(
+            package='nav2_lifecycle_manager', executable='lifecycle_manager',
+            name='lifecycle_manager_costmap', output='screen',
+            parameters=[{'use_sim_time': False},
+                        {'autostart': True},
+                        {'node_names': ['local_costmap/local_costmap',
+                                        'global_costmap/global_costmap']}]),
         Node(package='rviz2', executable='rviz2',
              arguments=['-d', os.path.join(
                  get_package_share_directory('nav2_bringup'),

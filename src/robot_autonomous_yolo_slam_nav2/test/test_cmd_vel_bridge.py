@@ -138,3 +138,17 @@ def test_timeout_ramp_hard_zeroes_and_fresh_command_recovers() -> None:
     finally:
         if rclpy.ok():
             rclpy.shutdown()
+
+
+def test_bridge_has_no_stuck_latch_path() -> None:
+    source = BRIDGE_PATH.read_text()
+    assert "stuck" not in source.lower()
+    assert not hasattr(BRIDGE_MODULE, "should_halt")
+
+
+def test_kick_start_from_zero_jumps_past_stiction_deadband() -> None:
+    assert BRIDGE_MODULE.CmdVelBridge._rolling_floor(0.0, 10.0) >= 25.0
+    assert BRIDGE_MODULE.CmdVelBridge._rolling_floor(0.0, -10.0) <= -25.0
+
+
+

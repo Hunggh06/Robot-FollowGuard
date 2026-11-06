@@ -10,15 +10,6 @@ def derive_clearance(master_m: float, delta_m: float, origin_offset_m: float) ->
     return max(0.0, float(master_m) + float(delta_m) - float(origin_offset_m))
 
 
-def recovery_clearance(requested_m: float, guard_m: float) -> float:
-    """Keep the larger margin: never silently reduce a requested clearance.
-
-    The guard is a floor, not a ceiling. Recovery plans with at least the
-    guard distance and honors any larger operator-requested margin.
-    """
-    return max(0.0, max(float(requested_m), float(guard_m)))
-
-
 @dataclass(frozen=True, slots=True)
 class ClearancePolicy:
     """Stop and slow distances derived from one master clearance."""

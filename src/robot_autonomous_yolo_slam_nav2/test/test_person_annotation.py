@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 
 from robot_autonomous_yolo_slam_nav2 import person_annotation
-from robot_autonomous_yolo_slam_nav2.person_annotation import BandOverlay, TagOverlay
+from robot_autonomous_yolo_slam_nav2.person_annotation import TagOverlay
 from robot_autonomous_yolo_slam_nav2.target_state import (
     TargetSelectionResult, TargetState, TrackId, TrackObservation,
 )
@@ -98,73 +98,31 @@ def test_overlay_does_not_mark_a_target_when_selection_is_lost(
     assert not any("TARGET ID" in label for label in labels)
 
 
-def band(
-    track_id: int = 7,
-    red_center: tuple[float, float] = (90.0, 170.0),
-    blue_center: tuple[float, float] = (90.0, 195.0),
-) -> BandOverlay:
-    return BandOverlay(TrackId(track_id), red_center, blue_center)
-
-
-def test_overlay_draws_band_boxes_and_confirm_status(
+def test_overlay_draws_target_pose_skeleton_and_raised_status(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    frame = np.zeros((240, 320, 3), dtype=np.uint8)
-    labels = labels_of(monkeypatch)
-    tracks = [(7, (40., 50., 140., 210.), 0.9)]
-    output = person_annotation.annotate_people(frame, tracks, selection(), (), (band(),))
+    from robot_autonomous_yolo_slam_nav2.hand_raise_logic import Keypoint, PoseDetection
 
-    assert any("bands=CONFIRM" in label for label in labels)
-    assert any("tags=0" in label for label in labels)
-    assert tuple(output[164, 90]) == (0, 0, 255)
-    assert tuple(output[189, 90]) == (255, 0, 0)
+    labels = labels_of(monkeypatch)
+    frame = np.zeros((240, 320, 3), dtype=np.uint8)
+    points = tuple(Keypoint(60.0 + index, 60.0 + index, 0.9) for index in range(17))
+    pose = PoseDetection((40., 50., 140., 210.), points)
+    output = person_annotation.annotate_people(
+        frame, [(7, (40., 50., 140., 210.), 0.9)], selection(), (), (pose,), True)
+
+    assert any("pose=RAISED" in label for label in labels)
+    assert tuple(output[60, 60]) == (0, 255, 0)
     assert not frame.any()
 
 
-@pytest.mark.parametrize(
-    ("bands", "result", "expected"),
-    [
-        ((band(),), "locked", "bands=CONFIRM"),
-        ((), "locked", "bands=SKIP"),
-        ((), "lost", "bands=SEARCH"),
-    ],
-)
-def test_overlay_band_status_strings(
+def test_overlay_reports_pose_off_without_inference(
     monkeypatch: pytest.MonkeyPatch,
-    bands: tuple[BandOverlay, ...],
-    result: str,
-    expected: str,
 ) -> None:
     labels = labels_of(monkeypatch)
-    sel = (
-        selection()
-        if result == "locked"
-        else TargetSelectionResult(TargetState.LOST, None, (), False)
-    )
     person_annotation.annotate_people(
         np.zeros((240, 320, 3), dtype=np.uint8),
-        [(7, (40., 50., 140., 210.), 0.9)],
-        sel,
-        (),
-        bands,
-    )
-    assert any(expected in label for label in labels)
-
-
-def test_overlay_preserves_tag_path_alongside_bands(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    labels = labels_of(monkeypatch)
-    output = person_annotation.annotate_people(
-        np.zeros((240, 320, 3), dtype=np.uint8),
-        [(7, (40., 50., 140., 210.), 0.9)],
-        selection(),
-        (tag(),),
-        (band(),),
-    )
-    assert any("tag=CONFIRM" in label for label in labels)
-    assert any("bands=CONFIRM" in label for label in labels)
-    assert tuple(output[100, 80]) == (0, 255, 255)
+        [(7, (40., 50., 140., 210.), 0.9)], selection(), ())
+    assert any("pose=off" in label for label in labels)
 
 
 def test_annotation_module_has_no_legacy_marker_references() -> None:
