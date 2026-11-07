@@ -6,8 +6,8 @@
 
 <p>
   A ROS 2 mobile-robot prototype that confirms one person with an AprilTag,
-  associates that person with 2D LiDAR measurements, follows through Nav2,
-  and monitors a user-defined safe zone.
+  fuses that person's LiDAR and camera geometry, follows through Nav2, and
+  monitors a user-defined safe zone with a foot-lift-gated return mode.
 </p>
 
 [![ROS 2 Humble](https://img.shields.io/badge/ROS%202-Humble-22314E?logo=ros)](https://docs.ros.org/en/humble/)
@@ -59,14 +59,14 @@
 Robot FollowGuard combines phone-camera person detection, AprilTag identity
 confirmation, LiDAR geometry, SLAM Toolbox, Nav2, and a guarded velocity path
 for one mobile-robot workflow. Camera data identifies a candidate; distance is
-never estimated from the image. The metric target node projects fresh LiDAR
-returns into the confirmed person's image bounding box before Nav2 receives a
-follow target.
+never estimated from the image alone. A constant-velocity Kalman filter fuses
+fresh LiDAR returns projected into the confirmed person's image bounding box
+with the camera bearing before Nav2 receives a follow target.
 
 The system also exposes a safe-zone workflow: an operator supplies four map
 points, the zone guard watches the confirmed target, announces an exit, and can
-enter a guided return mode after a configured confirmation phrase. Details and
-scope boundaries are in the [architecture guide](docs/architecture.md).
+enter a guided return mode after the person holds a lifted-foot gesture. Details
+and scope boundaries are in the [architecture guide](docs/architecture.md).
 
 ## Highlights
 
@@ -79,6 +79,7 @@ scope boundaries are in the [architecture guide](docs/architecture.md).
 - YOLOv8 detect-only person boxes and a lightweight IoU tracker.
 - `tag36h11:0` confirmation only inside person ROIs.
 - LiDAR points projected into the selected image box.
+- Constant-velocity Kalman fusion of LiDAR and camera geometry.
 - Bounded Nav2 spin recovery after target loss.
 
 </td>
@@ -89,7 +90,7 @@ scope boundaries are in the [architecture guide](docs/architecture.md).
 - Four operator-selected map points define a polygon.
 - LiDAR-based target position checks; camera is identity only.
 - Configured Vietnamese voice-alert topics.
-- Confirmation-gated guide-return behavior.
+- Foot-lift-gated guide-return behavior.
 
 </td>
 </tr>
@@ -99,6 +100,7 @@ scope boundaries are in the [architecture guide](docs/architecture.md).
 **SLAM & Autonomous Navigation**
 
 - SLAM Toolbox and Nav2 launch integration.
+- `robot_localization` EKF fusing wheel odometry and phone yaw-rate.
 - Camera-to-base TF and calibrated `CameraInfo` publisher.
 - Obstacle-aware follow-goal updates from fresh scan data.
 - Nav2 `/spin` action for bounded recovery search.
@@ -121,9 +123,11 @@ scope boundaries are in the [architecture guide](docs/architecture.md).
 
 The [Android phone application](https://github.com/Hunggh06/jros2_cellphone_interface)
 can publish the back-camera topic consumed here. Its README documents many
-other sensors, but this repository directly configures only the back camera;
-it also accepts `/phone/speech_text` and publishes `/phone/speaker/say` for the
-safe-zone interaction. IMU use is not claimed by this follower source tree.
+other sensors, but this repository directly configures only the back camera and
+the phone IMU yaw-rate channel; it also accepts `/phone/speech_text` and
+publishes `/phone/speaker/say` for the safe-zone interaction. The launch fuses
+wheel odometry with the phone's yaw-rate IMU through `robot_localization`; full
+orientation and linear acceleration are not trusted.
 
 ```mermaid
 flowchart LR
@@ -131,7 +135,7 @@ flowchart LR
     yolo --> tag["AprilTag ROI confirmation\ntag36h11 ID 0"]
     tag --> target["PersonTarget"]
     lidar["Xiaomi LDS02RR\nESP32 + micro-ROS"] --> telem["kaiaai_telemetry\n/scan"]
-    telem --> metric["LiDAR-to-image metric association"]
+    telem --> metric["LiDAR-to-image metric association\n+ Kalman fusion"]
     target --> metric
     metric --> follow["Nav2 person-follow + recovery"]
     slam["SLAM Toolbox / TF / map"] --> follow
@@ -140,6 +144,8 @@ flowchart LR
     metric --> zone["Safe-zone guard"]
     phone -. "/phone/speech_text" .-> zone
     zone -. "/phone/speaker/say" .-> phone
+    phone -. "yaw-rate IMU" .-> ekf["robot_localization EKF"]
+    ekf --> slam
     zone --> follow
 ```
 
@@ -148,13 +154,15 @@ flowchart LR
 1. YOLO detects people in `/phone/camera/back/image`; a tracker maintains IDs.
 2. The AprilTag detector scans only person crops. Exactly one valid configured
    tag inside exactly one box confirms the target.
-3. Fresh `/scan`, `CameraInfo`, and TF data are associated with that target.
+3. Fresh `/scan`, `CameraInfo`, and TF data are associated with that target; a
+   constant-velocity Kalman filter smooths the fused LiDAR and camera geometry.
 4. Nav2 receives an obstacle-aware follow goal when all validity gates pass.
 5. On target loss, an existing Nav2 goal is allowed to finish first; then the
    follower uses bounded `/spin` recovery. Fresh person observations can pause
    the spin briefly for ROI tag inspection.
 6. The zone guard evaluates the metric target against an operator-defined map
-   polygon, publishes status, and uses configured speech topics for alerts.
+   polygon, publishes status, and uses configured speech topics for alerts. A
+   confirmed foot-lift hold switches to guide-return mode.
 
 Read the implementation-oriented [algorithms guide](docs/algorithms.md) for
 state transitions and the [hardware guide](docs/hardware.md) for interfaces.
@@ -165,6 +173,7 @@ state transitions and the [hardware guide](docs/hardware.md) for interfaces.
 |---|---|
 | ROS 2 Humble host | Runs perception, association, SLAM/Nav2, safety, and zone nodes. |
 | Android phone | Supplies `/phone/camera/back/image`; may bridge configured speech topics. |
+| Android phone IMU | Supplies the yaw-rate channel used by the EKF; full orientation is not trusted. |
 | ESP32 | Runs `firmware_esp32/robot.ino`: micro-ROS, LDS02RR telemetry, motor PID, encoders. |
 | Xiaomi LDS02RR | UART LiDAR source decoded into `/scan` by `kaiaai_telemetry`. |
 | Motors and encoders | JGA25-370 geared DC motors, rated at 240 RPM; receive RPM commands and produce firmware state feedback. |
@@ -176,6 +185,8 @@ state transitions and the [hardware guide](docs/hardware.md) for interfaces.
 |---|---|
 | ROS 2 Humble / `colcon` | Package build and runtime graph. |
 | Python, rclpy, OpenCV, Ultralytics | Camera pipeline, AprilTag detection, YOLO inference. |
+| NumPy Kalman filter | Constant-velocity fusion of LiDAR and camera geometry. |
+| `robot_localization` | EKF fusing wheel odometry and phone yaw-rate. |
 | SLAM Toolbox, Nav2 | Mapping, action-based navigation, bounded spin recovery. |
 | `tf2_ros`, `cv_bridge`, sensor messages | Frame transforms and ROS image/sensor integration. |
 | micro-ROS / ESP32 | Embedded telemetry and motor-control transport. |
@@ -184,8 +195,9 @@ state transitions and the [hardware guide](docs/hardware.md) for interfaces.
 
 See [installation and configuration](docs/hardware.md#host-and-workspace-setup)
 before running on hardware. At minimum, install ROS 2 Humble, SLAM Toolbox,
-Nav2, Python dependencies listed by the package, and an Ultralytics-compatible
-`yolov8n.pt` file. Weights are intentionally not committed.
+Nav2, `robot_localization`, the Python dependencies listed by the package, and
+Ultralytics-compatible `yolov8n.pt` (person following) and `yolov8n-pose.pt`
+(foot-lift gesture) weights. Weights are intentionally not committed.
 
 ```bash
 git clone https://github.com/Hunggh06/Robot-FollowGuard.git
@@ -195,13 +207,13 @@ colcon build --packages-select kaiaai_msgs kaiaai_telemetry robot_autonomous_yol
 source install/setup.bash
 ```
 
-The committed configuration contains a workstation-specific YOLO weight path;
-replace it with your local absolute path before launching.
+The committed configuration contains workstation-specific model paths; replace
+them with your local absolute paths before launching.
 
 ## Quick Start
 
-1. Flash and configure the ESP32 firmware for your own Wi-Fi and micro-ROS
-   Agent address. The committed firmware uses placeholder credentials.
+1. Configure your own Wi-Fi SSID, password, and micro-ROS Agent address for the
+   ESP32 firmware before flashing; never commit real credentials.
 2. Start your micro-ROS Agent using the transport configured on the ESP32.
 3. Run the Android application on the same DDS-capable network and enable its
    back-camera stream.
@@ -214,6 +226,8 @@ replace it with your local absolute path before launching.
 
 6. Place `tag36h11` ID `0` on the intended person. For camera-only inspection,
    use `use_slam:=false` and view `/person_follow/annotated` in `rqt_image_view`.
+7. For guide-return testing, draw a safe zone in RViz (below), step outside,
+   and hold one foot clearly off the ground for one second when prompted.
 
 ### Draw a Safe Zone in RViz
 
@@ -229,13 +243,25 @@ replace it with your local absolute path before launching.
    ros2 service call /zone_guard/reset_zone std_srvs/srv/Trigger "{}"
    ```
 
+The guide-return request uses a foot-lift gesture, not a spoken phrase; see the
+package README for the pose-model and gesture details.
+
 ## Experiments & Validation
 
 > [!IMPORTANT]
 > **Pending Quantitative Validation.** This repository contains no committed
 > benchmark dataset, hardware trial log, FPS measurement, accuracy result, or
-> safety certification. Unit/integration test sources are intentionally not
-> included in this public snapshot. See [validation status](docs/validation.md).
+> safety certification. Unit and integration tests are included under
+> `src/robot_autonomous_yolo_slam_nav2/test/`; they validate software behavior,
+> not field performance.
+
+Run the tests from the repository root after sourcing the workspace:
+
+```bash
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+python3 -m pytest src/robot_autonomous_yolo_slam_nav2/test
+```
 
 ## Known Limitations
 
@@ -243,10 +269,12 @@ replace it with your local absolute path before launching.
   motion blur, and YOLO person-box coverage.
 - LiDAR-camera association requires valid calibration, TF, and synchronized
   fresh sensor data; camera-only range estimation is not implemented.
+- Foot-lift confirmation requires the local `yolov8n-pose.pt` model and a clear
+  view of hips, knees, and ankles; ambiguous poses do not confirm.
 - The safe-zone workflow is configuration-dependent and not a certified safety
   system.
 - Network discovery and phone image streaming depend on local Wi-Fi/DDS setup.
-- The checked-in model path and firmware network constants require local setup.
+- The checked-in model paths and firmware network constants require local setup.
 
 ## Repository Structure
 
@@ -261,6 +289,7 @@ Robot-FollowGuard/
 │       ├── firmware_esp32/        # ESP32 firmware
 │       ├── calibration/ config/ launch/ msg/
 │       ├── meshes/ urdf/ rviz/
+│       ├── test/                  # Unit and integration tests
 │       └── robot_autonomous_yolo_slam_nav2/  # Runtime modules
 ├── .gitignore
 └── README.md
